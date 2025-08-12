@@ -1,0 +1,24 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+	<PropertyGroup>
+		<TargetFramework>net9.0-windows</TargetFramework>
+		<OutputType>Library</OutputType>
+		<AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+
+		<!-- Native AOT -->
+		<PublishAot>true</PublishAot>
+		<SelfContained>true</SelfContained>
+		<RuntimeIdentifier>win-x64</RuntimeIdentifier>
+		<StripSymbols>true</StripSymbols>
+		<InvariantGlobalization>true</InvariantGlobalization>
+		<Optimize>true</Optimize>
+
+		<!-- Make it a DLL with exports -->
+		<NativeLib>Shared</NativeLib>
+
+		<!-- Trimming-friendly defaults -->
+		<IlcGenerateCompleteTypeMetadata>false</IlcGenerateCompleteTypeMetadata>
+		<IlcOptimizationPreference>Speed</IlcOptimizationPreference>
+		<EventSourceSupport>false</EventSourceSupport>
+	</PropertyGroup>
+</Project>
