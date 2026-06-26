@@ -46,9 +46,10 @@ public static unsafe class DbgEng
 
 	public static int ControlOutput(IntPtr pControl, uint mask, ReadOnlySpan<byte> utf8NoNul)
 	{
-		// IDebugControl vtable index for Output is 8 in baseline interfaces.
+		// IDebugControl vtable: after IUnknown (0/1/2), Output is index 14 — NOT 8
+		// (index 8 is OpenLogFile). Verified against dbgeng.h. This was the bug.
 		var vtbl = *(nint**)pControl;
-		var output = (delegate* unmanaged[Stdcall]<IntPtr, uint, sbyte*, int>)vtbl[8];
+		var output = (delegate* unmanaged[Stdcall]<IntPtr, uint, sbyte*, int>)vtbl[14];
 
 		fixed (byte* p = utf8NoNul)
 		{

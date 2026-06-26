@@ -91,7 +91,7 @@ public static unsafe class CommandHost
 		return Encoding.UTF8.GetString(new ReadOnlySpan<byte>(p, len));
 	}
 
-	private static List<string> Argv(string input)
+	internal static List<string> Argv(string input)
 	{
 		var list = new List<string>();
 		if (string.IsNullOrWhiteSpace(input)) return list;
