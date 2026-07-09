@@ -6,96 +6,101 @@ using System.Runtime.InteropServices;
 namespace WinDbgAotExt.Host;
 
 // Boots CoreCLR in-process via hostfxr and calls the managed Bridge — the make-or-break Layer-2 seam.
+// Stands in for the native AOT WinDbg extension so the hosting can be proven without a debugger.
 internal static unsafe class Program
 {
-	const int hdt_load_assembly_and_get_function_pointer = 5;
+	private const int RuntimeDelegateLoadAssemblyAndGetFunctionPointer = 5;
 
-	static int Main(string[] args)
+	private static int Main(string[] arguments)
 	{
-		if (args.Length < 1)
+		if (arguments.Length < 1)
 		{
-			Console.Error.WriteLine("usage: Host <bridge-output-dir>");
+			Console.Error.WriteLine("usage: Host <bridge-output-directory> [<C# expression> ...]");
 			return 2;
 		}
-		string bridgeDir = args[0];
-		string bridgeDll = Path.Combine(bridgeDir, "WinDbgAotExt.Bridge.dll");
-		string bridgeCfg = Path.Combine(bridgeDir, "WinDbgAotExt.Bridge.runtimeconfig.json");
-		if (!File.Exists(bridgeCfg)) { Console.Error.WriteLine("missing " + bridgeCfg); return 2; }
+		string bridgeDirectory = arguments[0];
+		string bridgeDllPath = Path.Combine(bridgeDirectory, "WinDbgAotExt.Bridge.dll");
+		string runtimeConfigPath = Path.Combine(bridgeDirectory, "WinDbgAotExt.Bridge.runtimeconfig.json");
+		if (!File.Exists(runtimeConfigPath)) { Console.Error.WriteLine("missing " + runtimeConfigPath); return 2; }
 
-		string hostfxr = FindHostFxr();
-		Console.WriteLine("hostfxr : " + hostfxr);
-		IntPtr fxr = NativeLibrary.Load(hostfxr);
+		string hostfxrPath = FindHostFxr();
+		Console.WriteLine("hostfxr : " + hostfxrPath);
+		IntPtr hostfxrLibrary = NativeLibrary.Load(hostfxrPath);
 
-		var init = (delegate* unmanaged<char*, IntPtr, out IntPtr, int>)
-			NativeLibrary.GetExport(fxr, "hostfxr_initialize_for_runtime_config");
-		var getDel = (delegate* unmanaged<IntPtr, int, out IntPtr, int>)
-			NativeLibrary.GetExport(fxr, "hostfxr_get_runtime_delegate");
-		var close = (delegate* unmanaged<IntPtr, int>)
-			NativeLibrary.GetExport(fxr, "hostfxr_close");
+		var initializeForRuntimeConfig = (delegate* unmanaged<char*, IntPtr, out IntPtr, int>)
+			NativeLibrary.GetExport(hostfxrLibrary, "hostfxr_initialize_for_runtime_config");
+		var getRuntimeDelegate = (delegate* unmanaged<IntPtr, int, out IntPtr, int>)
+			NativeLibrary.GetExport(hostfxrLibrary, "hostfxr_get_runtime_delegate");
+		var closeHostContext = (delegate* unmanaged<IntPtr, int>)
+			NativeLibrary.GetExport(hostfxrLibrary, "hostfxr_close");
 
-		int rc;
-		IntPtr ctx;
-		fixed (char* cfg = bridgeCfg)
-			rc = init(cfg, IntPtr.Zero, out ctx);
+		int hresult;
+		IntPtr hostContext;
+		fixed (char* runtimeConfigPathPointer = runtimeConfigPath)
+			hresult = initializeForRuntimeConfig(runtimeConfigPathPointer, IntPtr.Zero, out hostContext);
 		// 0=Success, 1=Success_HostAlreadyInitialized, 2=Success_DifferentRuntimeProperties
-		if (rc < 0 || ctx == IntPtr.Zero) { Console.Error.WriteLine($"initialize failed 0x{rc:X8}"); return 3; }
-		Console.WriteLine($"initialize: rc=0x{rc:X8} ctx=0x{ctx.ToInt64():X}");
+		if (hresult < 0 || hostContext == IntPtr.Zero) { Console.Error.WriteLine($"initialize failed 0x{hresult:X8}"); return 3; }
+		Console.WriteLine($"initialize: hresult=0x{hresult:X8} hostContext=0x{hostContext.ToInt64():X}");
 
-		rc = getDel(ctx, hdt_load_assembly_and_get_function_pointer, out IntPtr loadFnPtr);
-		if (rc != 0 || loadFnPtr == IntPtr.Zero) { Console.Error.WriteLine($"get_runtime_delegate failed 0x{rc:X8}"); close(ctx); return 4; }
-		var load = (delegate* unmanaged<char*, char*, char*, char*, void*, void**, int>)loadFnPtr;
+		hresult = getRuntimeDelegate(hostContext, RuntimeDelegateLoadAssemblyAndGetFunctionPointer, out IntPtr loadFunctionPointer);
+		if (hresult != 0 || loadFunctionPointer == IntPtr.Zero) { Console.Error.WriteLine($"get_runtime_delegate failed 0x{hresult:X8}"); closeHostContext(hostContext); return 4; }
+		var loadAssemblyAndGetFunctionPointer = (delegate* unmanaged<char*, char*, char*, char*, void*, void**, int>)loadFunctionPointer;
 
-		IntPtr pingPtr;
-		fixed (char* asm = bridgeDll)
-		fixed (char* typ = "WinDbgAotExt.Bridge.Bridge, WinDbgAotExt.Bridge")
-		fixed (char* mth = "Ping")
+		// --- Step 1: call Bridge.Ping (default component-entry-point signature) as a sanity check ---
+		IntPtr pingFunctionPointer;
+		fixed (char* assemblyPath = bridgeDllPath)
+		fixed (char* typeName = "WinDbgAotExt.Bridge.Bridge, WinDbgAotExt.Bridge")
+		fixed (char* methodName = "Ping")
 		{
-			void* fp;
-			rc = load(asm, typ, mth, null, null, &fp);
-			pingPtr = (IntPtr)fp;
+			void* functionPointer;
+			hresult = loadAssemblyAndGetFunctionPointer(assemblyPath, typeName, methodName, null, null, &functionPointer);
+			pingFunctionPointer = (IntPtr)functionPointer;
 		}
-		if (rc != 0 || pingPtr == IntPtr.Zero) { Console.Error.WriteLine($"load_assembly_and_get_function_pointer failed 0x{rc:X8}"); close(ctx); return 5; }
-
-		var ping = (delegate* unmanaged<IntPtr, int, int>)pingPtr;
+		if (hresult != 0 || pingFunctionPointer == IntPtr.Zero) { Console.Error.WriteLine($"load Ping failed 0x{hresult:X8}"); closeHostContext(hostContext); return 5; }
+		var ping = (delegate* unmanaged<IntPtr, int, int>)pingFunctionPointer;
 		int pingResult = ping(IntPtr.Zero, 0);
 		Console.WriteLine($"Ping returned: {pingResult}  (expected 4242)");
 
 		// --- Step 2: get Eval (an [UnmanagedCallersOnly] method) and run live C# through Roslyn ---
-		// delegate_type_name = UNMANAGEDCALLERSONLY_METHOD = (char_t*)-1 → return the method's own ptr.
-		IntPtr evalPtr;
-		fixed (char* asm = bridgeDll)
-		fixed (char* typ = "WinDbgAotExt.Bridge.Bridge, WinDbgAotExt.Bridge")
-		fixed (char* mth = "Eval")
+		// delegate_type_name = UNMANAGEDCALLERSONLY_METHOD = (char*)-1 → return the method's own pointer.
+		IntPtr evalFunctionPointer;
+		fixed (char* assemblyPath = bridgeDllPath)
+		fixed (char* typeName = "WinDbgAotExt.Bridge.Bridge, WinDbgAotExt.Bridge")
+		fixed (char* methodName = "Eval")
 		{
-			void* fp;
-			rc = load(asm, typ, mth, (char*)(nint)(-1), null, &fp);
-			evalPtr = (IntPtr)fp;
+			void* functionPointer;
+			hresult = loadAssemblyAndGetFunctionPointer(assemblyPath, typeName, methodName, (char*)(nint)(-1), null, &functionPointer);
+			evalFunctionPointer = (IntPtr)functionPointer;
 		}
-		if (rc != 0 || evalPtr == IntPtr.Zero) { Console.Error.WriteLine($"get Eval failed 0x{rc:X8}"); close(ctx); return 6; }
-		var eval = (delegate* unmanaged<IntPtr, IntPtr>)evalPtr;
+		if (hresult != 0 || evalFunctionPointer == IntPtr.Zero) { Console.Error.WriteLine($"get Eval failed 0x{hresult:X8}"); closeHostContext(hostContext); return 6; }
+		var evaluate = (delegate* unmanaged<IntPtr, IntPtr, IntPtr>)evalFunctionPointer;
 
-		foreach (string code in args.Length > 1 ? args[1..] : new[] { "1 + 2", "Enumerable.Range(1,10).Where(x => x % 2 == 0).Sum()" })
+		// The standalone host has no debugger, so pass IntPtr.Zero as the debug client.
+		string[] expressions = arguments.Length > 1
+			? arguments[1..]
+			: new[] { "1 + 2", "Enumerable.Range(1,10).Where(number => number % 2 == 0).Sum()" };
+		foreach (string expression in expressions)
 		{
-			IntPtr codePtr = Marshal.StringToHGlobalUni(code);
-			IntPtr resPtr = eval(codePtr);
-			string res = Marshal.PtrToStringUni(resPtr) ?? "(null)";
-			Console.WriteLine($"  eval(\"{code}\") = {res}");
-			Marshal.FreeHGlobal(codePtr);
-			Marshal.FreeHGlobal(resPtr);
+			IntPtr codePointer = Marshal.StringToHGlobalUni(expression);
+			IntPtr resultPointer = evaluate(codePointer, IntPtr.Zero);
+			string result = Marshal.PtrToStringUni(resultPointer) ?? "(null)";
+			Console.WriteLine($"  eval(\"{expression}\") = {result}");
+			Marshal.FreeHGlobal(codePointer);
+			Marshal.FreeHGlobal(resultPointer);
 		}
 
-		close(ctx);
+		closeHostContext(hostContext);
 		return pingResult == 4242 ? 0 : 1;
 	}
 
-	static string FindHostFxr()
+	private static string FindHostFxr()
 	{
-		string root = Environment.GetEnvironmentVariable("DOTNET_ROOT") ?? @"C:\Program Files\dotnet";
-		string fxrBase = Path.Combine(root, "host", "fxr");
-		string? hit = Directory.Exists(fxrBase)
-			? Directory.GetDirectories(fxrBase).OrderBy(d => d)
-				.Select(d => Path.Combine(d, "hostfxr.dll")).LastOrDefault(File.Exists)
+		string dotnetRoot = Environment.GetEnvironmentVariable("DOTNET_ROOT") ?? @"C:\Program Files\dotnet";
+		string frameworkResolverBase = Path.Combine(dotnetRoot, "host", "fxr");
+		string? hostfxrPath = Directory.Exists(frameworkResolverBase)
+			? Directory.GetDirectories(frameworkResolverBase).OrderBy(directory => directory)
+				.Select(directory => Path.Combine(directory, "hostfxr.dll")).LastOrDefault(File.Exists)
 			: null;
-		return hit ?? throw new FileNotFoundException("hostfxr.dll not found under " + fxrBase);
+		return hostfxrPath ?? throw new FileNotFoundException("hostfxr.dll not found under " + frameworkResolverBase);
 	}
 }

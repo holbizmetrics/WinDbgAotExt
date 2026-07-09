@@ -12,114 +12,125 @@ namespace WinDbgAotExt;
 // which is exactly why this works (proven in the layer2/ spike; this ports it into the .load'able DLL).
 internal static unsafe class ClrHost
 {
-	const int hdt_load_assembly_and_get_function_pointer = 5;
-	const int GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS = 0x4;
-	const int GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT = 0x2;
+	private const int RuntimeDelegateLoadAssemblyAndGetFunctionPointer = 5;
+	private const int GetModuleHandleExFlagFromAddress = 0x4;
+	private const int GetModuleHandleExFlagUnchangedRefcount = 0x2;
 
-	static bool _booted;
-	static string? _bridgeDll;
-	static delegate* unmanaged<char*, char*, char*, char*, void*, void**, int> _load;
+	private static bool _isBooted;
+	private static string? _bridgeDllPath;
+	private static delegate* unmanaged<char*, char*, char*, char*, void*, void**, int> _loadAssemblyAndGetFunctionPointer;
 
-	// Anchor whose address lies inside THIS DLL — used to locate our own module path.
-	[UnmanagedCallersOnly] static void Anchor() { }
+	// A method whose address lies inside THIS DLL — used to locate our own module path.
+	[UnmanagedCallersOnly] private static void ModuleAnchor() { }
 
-	// Boots the runtime once (cached). Returns null on success, else an error string.
+	// Boots the runtime once (cached). Returns null on success, else a human-readable error string.
 	public static string? EnsureBooted()
 	{
-		if (_booted) return null;
+		if (_isBooted) return null;
 		try
 		{
-			string extDir = GetOwnDirectory();
-			string bridgeDir = Path.Combine(extDir, "bridge");
-			_bridgeDll = Path.Combine(bridgeDir, "WinDbgAotExt.Bridge.dll");
-			string cfg = Path.Combine(bridgeDir, "WinDbgAotExt.Bridge.runtimeconfig.json");
-			if (!File.Exists(cfg)) return "bridge runtimeconfig not found next to extension: " + cfg;
+			string extensionDirectory = GetOwnDirectory();
+			string bridgeDirectory = Path.Combine(extensionDirectory, "bridge");
+			_bridgeDllPath = Path.Combine(bridgeDirectory, "WinDbgAotExt.Bridge.dll");
+			string runtimeConfigPath = Path.Combine(bridgeDirectory, "WinDbgAotExt.Bridge.runtimeconfig.json");
+			if (!File.Exists(runtimeConfigPath))
+				return "bridge runtimeconfig not found next to extension: " + runtimeConfigPath;
 
-			string hostfxr = FindHostFxr();
-			IntPtr fxr = NativeLibrary.Load(hostfxr);
-			var init = (delegate* unmanaged<char*, IntPtr, out IntPtr, int>)
-				NativeLibrary.GetExport(fxr, "hostfxr_initialize_for_runtime_config");
-			var getDel = (delegate* unmanaged<IntPtr, int, out IntPtr, int>)
-				NativeLibrary.GetExport(fxr, "hostfxr_get_runtime_delegate");
+			string hostfxrPath = FindHostFxr();
+			IntPtr hostfxrLibrary = NativeLibrary.Load(hostfxrPath);
+			var initializeForRuntimeConfig = (delegate* unmanaged<char*, IntPtr, out IntPtr, int>)
+				NativeLibrary.GetExport(hostfxrLibrary, "hostfxr_initialize_for_runtime_config");
+			var getRuntimeDelegate = (delegate* unmanaged<IntPtr, int, out IntPtr, int>)
+				NativeLibrary.GetExport(hostfxrLibrary, "hostfxr_get_runtime_delegate");
 
-			int rc; IntPtr ctx;
-			fixed (char* c = cfg) rc = init(c, IntPtr.Zero, out ctx);
-			if (rc < 0 || ctx == IntPtr.Zero) return $"hostfxr init failed 0x{rc:X8}";
-			rc = getDel(ctx, hdt_load_assembly_and_get_function_pointer, out IntPtr loadPtr);
-			if (rc != 0 || loadPtr == IntPtr.Zero) return $"get_runtime_delegate failed 0x{rc:X8}";
+			int hresult;
+			IntPtr hostContext;
+			fixed (char* runtimeConfigPathPointer = runtimeConfigPath)
+				hresult = initializeForRuntimeConfig(runtimeConfigPathPointer, IntPtr.Zero, out hostContext);
+			if (hresult < 0 || hostContext == IntPtr.Zero) return $"hostfxr init failed 0x{hresult:X8}";
 
-			_load = (delegate* unmanaged<char*, char*, char*, char*, void*, void**, int>)loadPtr;
-			_booted = true;
+			hresult = getRuntimeDelegate(hostContext, RuntimeDelegateLoadAssemblyAndGetFunctionPointer, out IntPtr loadFunctionPointer);
+			if (hresult != 0 || loadFunctionPointer == IntPtr.Zero) return $"get_runtime_delegate failed 0x{hresult:X8}";
+
+			_loadAssemblyAndGetFunctionPointer = (delegate* unmanaged<char*, char*, char*, char*, void*, void**, int>)loadFunctionPointer;
+			_isBooted = true;
 			return null;
 		}
-		catch (Exception e) { return e.GetType().Name + ": " + e.Message; }
+		catch (Exception exception)
+		{
+			return exception.GetType().Name + ": " + exception.Message;
+		}
 	}
 
 	// Step-3a de-risk: prove the extension can reach managed CoreCLR code. Returns 4242 on success.
 	public static int Ping()
 	{
 		if (EnsureBooted() != null) return -1;
-		IntPtr fp;
-		fixed (char* asm = _bridgeDll)
-		fixed (char* typ = "WinDbgAotExt.Bridge.Bridge, WinDbgAotExt.Bridge")
-		fixed (char* mth = "Ping")
+		IntPtr pingFunctionPointer;
+		fixed (char* assemblyPath = _bridgeDllPath)
+		fixed (char* typeName = "WinDbgAotExt.Bridge.Bridge, WinDbgAotExt.Bridge")
+		fixed (char* methodName = "Ping")
 		{
-			void* p; int rc = _load(asm, typ, mth, null, null, &p);
-			if (rc != 0) return -1;
-			fp = (IntPtr)p;
+			void* functionPointer;
+			int hresult = _loadAssemblyAndGetFunctionPointer(assemblyPath, typeName, methodName, null, null, &functionPointer);
+			if (hresult != 0) return -1;
+			pingFunctionPointer = (IntPtr)functionPointer;
 		}
-		var ping = (delegate* unmanaged<IntPtr, int, int>)fp;
+		var ping = (delegate* unmanaged<IntPtr, int, int>)pingFunctionPointer;
 		return ping(IntPtr.Zero, 0);
 	}
 
-	// Step-3b: compile + run live C# via Roslyn in the hosted CoreCLR; returns the result string.
-	public static string Eval(string code)
+	// Compile + run live C# via Roslyn in the hosted CoreCLR, handing the script the debugger client
+	// so it can reach the live target (Debugger.Exec, ...). Returns the result string.
+	public static string Eval(string sourceCode, IntPtr debugClient)
 	{
-		var err = EnsureBooted();
-		if (err != null) return "CLR boot failed: " + err;
-		IntPtr fp;
-		fixed (char* asm = _bridgeDll)
-		fixed (char* typ = "WinDbgAotExt.Bridge.Bridge, WinDbgAotExt.Bridge")
-		fixed (char* mth = "Eval")
+		var error = EnsureBooted();
+		if (error != null) return "CLR boot failed: " + error;
+		IntPtr evalFunctionPointer;
+		fixed (char* assemblyPath = _bridgeDllPath)
+		fixed (char* typeName = "WinDbgAotExt.Bridge.Bridge, WinDbgAotExt.Bridge")
+		fixed (char* methodName = "Eval")
 		{
-			void* p; int rc = _load(asm, typ, mth, (char*)(nint)(-1), null, &p); // UNMANAGEDCALLERSONLY_METHOD
-			if (rc != 0) return $"load Eval failed 0x{rc:X8}";
-			fp = (IntPtr)p;
+			void* functionPointer;
+			int hresult = _loadAssemblyAndGetFunctionPointer(assemblyPath, typeName, methodName,
+				(char*)(nint)(-1), null, &functionPointer); // (char*)-1 = UNMANAGEDCALLERSONLY_METHOD
+			if (hresult != 0) return $"load Eval failed 0x{hresult:X8}";
+			evalFunctionPointer = (IntPtr)functionPointer;
 		}
-		var eval = (delegate* unmanaged<IntPtr, IntPtr>)fp;
-		IntPtr codePtr = Marshal.StringToHGlobalUni(code);
-		IntPtr resPtr = eval(codePtr);
-		string res = Marshal.PtrToStringUni(resPtr) ?? "(null)";
-		Marshal.FreeHGlobal(codePtr);
-		if (resPtr != IntPtr.Zero) Marshal.FreeHGlobal(resPtr);
-		return res;
+		var evaluate = (delegate* unmanaged<IntPtr, IntPtr, IntPtr>)evalFunctionPointer; // (codeUtf16, debugClient) -> resultUtf16
+		IntPtr codePointer = Marshal.StringToHGlobalUni(sourceCode);
+		IntPtr resultPointer = evaluate(codePointer, debugClient);
+		string result = Marshal.PtrToStringUni(resultPointer) ?? "(null)";
+		Marshal.FreeHGlobal(codePointer);
+		if (resultPointer != IntPtr.Zero) Marshal.FreeHGlobal(resultPointer);
+		return result;
 	}
 
-	static string GetOwnDirectory()
+	private static string GetOwnDirectory()
 	{
-		delegate* unmanaged<void> anchor = &Anchor;
-		if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-				(IntPtr)anchor, out IntPtr h))
+		delegate* unmanaged<void> anchorAddress = &ModuleAnchor;
+		if (!GetModuleHandleExW(GetModuleHandleExFlagFromAddress | GetModuleHandleExFlagUnchangedRefcount,
+				(IntPtr)anchorAddress, out IntPtr moduleHandle))
 			throw new InvalidOperationException("GetModuleHandleExW failed");
-		char* buf = stackalloc char[520];
-		uint n = GetModuleFileNameW(h, buf, 520);
-		string own = new string(buf, 0, (int)n);
-		return Path.GetDirectoryName(own) ?? throw new InvalidOperationException("no dir for " + own);
+		char* pathBuffer = stackalloc char[520];
+		uint pathLength = GetModuleFileNameW(moduleHandle, pathBuffer, 520);
+		string ownDllPath = new string(pathBuffer, 0, (int)pathLength);
+		return Path.GetDirectoryName(ownDllPath) ?? throw new InvalidOperationException("no directory for " + ownDllPath);
 	}
 
-	static string FindHostFxr()
+	private static string FindHostFxr()
 	{
-		string root = Environment.GetEnvironmentVariable("DOTNET_ROOT") ?? @"C:\Program Files\dotnet";
-		string fxrBase = Path.Combine(root, "host", "fxr");
-		string? hit = Directory.Exists(fxrBase)
-			? Directory.GetDirectories(fxrBase).OrderBy(d => d)
-				.Select(d => Path.Combine(d, "hostfxr.dll")).LastOrDefault(File.Exists)
+		string dotnetRoot = Environment.GetEnvironmentVariable("DOTNET_ROOT") ?? @"C:\Program Files\dotnet";
+		string frameworkResolverBase = Path.Combine(dotnetRoot, "host", "fxr");
+		string? hostfxrPath = Directory.Exists(frameworkResolverBase)
+			? Directory.GetDirectories(frameworkResolverBase).OrderBy(directory => directory)
+				.Select(directory => Path.Combine(directory, "hostfxr.dll")).LastOrDefault(File.Exists)
 			: null;
-		return hit ?? throw new FileNotFoundException("hostfxr.dll not found under " + fxrBase);
+		return hostfxrPath ?? throw new FileNotFoundException("hostfxr.dll not found under " + frameworkResolverBase);
 	}
 
 	[DllImport("kernel32", SetLastError = true)]
-	static extern bool GetModuleHandleExW(int flags, IntPtr addr, out IntPtr module);
+	private static extern bool GetModuleHandleExW(int flags, IntPtr address, out IntPtr module);
 	[DllImport("kernel32", CharSet = CharSet.Unicode, SetLastError = true)]
-	static extern uint GetModuleFileNameW(IntPtr module, char* filename, uint size);
+	private static extern uint GetModuleFileNameW(IntPtr module, char* filename, uint size);
 }

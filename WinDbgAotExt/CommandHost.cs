@@ -93,11 +93,12 @@ public static unsafe class CommandHost
 		return 0;
 	}
 
-	// Layer 2, step 3b: run a live C# expression via Roslyn in the hosted CoreCLR.
-	private static int CsHandler(IntPtr _, IntPtr ctrl, IReadOnlyList<string> __, string raw)
+	// Layer 2, step 3b/2c: run a live C# expression via Roslyn in the hosted CoreCLR, handing the
+	// script the debugger client (first handler arg) so it can reach the live target (Dbg.Exec, ...).
+	private static int CsHandler(IntPtr client, IntPtr ctrl, IReadOnlyList<string> __, string raw)
 	{
 		if (string.IsNullOrWhiteSpace(raw)) { DbgEng.DbgOutLine(ctrl, "usage: !cs <C# expression>"); return 0; }
-		DbgEng.DbgOutLine(ctrl, ClrHost.Eval(raw));
+		DbgEng.DbgOutLine(ctrl, ClrHost.Eval(raw, client));
 		return 0;
 	}
 
