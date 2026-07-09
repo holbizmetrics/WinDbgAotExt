@@ -11,8 +11,8 @@ cycle. It is the C# answer to WinDbg's built-in JavaScript provider (`dx` / `.sc
 with the full weight of C# and the entire .NET library ecosystem behind it.
 
 What that unlocks (**mostly shipped now** — see [Status](#status): running live C#, *calling / piping /
-reformatting* commands (`!cs` + `debugger.Run`), and *reading target memory* (`debugger.ReadU64`) all
-work today; only the *heap/threads-as-typed-queryable-objects* snippet just below is still the goal):
+reformatting* commands, *reading target memory* (`debugger.ReadU64`), and *querying loaded modules as
+typed objects* (`debugger.Modules`) all work today; only full *heap-object* walking below is still the goal):
 
 - **Query the debuggee like a database.** Expose threads, modules, the heap, handles as queryable
   sources and use **LINQ** as your debugger query language:
@@ -93,6 +93,8 @@ cdb> !cs debugger.Run("lm").Split('\n').Where(l => l.Length > 0).Count()   # LIN
 21
 cdb> !cs debugger.ReadU32(0x7ffe0000).ToString("x8")    # read raw target memory (matches `dd`)
 00000000
+cdb> !cs debugger.Modules.OrderByDescending(m => m.Size).First().Name   # LINQ the loaded modules
+SHELL32
 ```
 
 Scripts reach the live target through a `debugger` object (the debug client, handed in per command):
@@ -101,6 +103,10 @@ Scripts reach the live target through a `debugger` object (the debug client, han
   reformat it (the "call → pipe → reformat" pillar).
 - `debugger.ReadBytes(addr, n)` / `ReadU64(addr)` / `ReadU32(addr)` — read raw target memory
   (`IDebugDataSpaces::ReadVirtual`), cross-checked to agree with the debugger's own `dd`.
+- `debugger.Modules` — the loaded modules as **typed objects** (`Name` / `Start` / `End` / `Size`),
+  so you LINQ the process's module state directly:
+  `debugger.Modules.Where(m => m.Name.StartsWith("K")).OrderByDescending(m => m.Size)`.
+  (Parsed from `lm` today; a future slice can back it with `IDebugSymbols`.)
 
 Every dbgeng call goes through vtable indices verified against `dbgeng.h` (`IDebugControl::Execute`=66,
 `IDebugClient::Get/SetOutputCallbacks`=33/34, `IDebugOutputCallbacks::Output`=3,
@@ -113,10 +119,10 @@ wrong index is this project's signature crash).
   the standalone AOT-hosts-CoreCLR spike; `WinDbgAotExt/ClrHost.cs` boots the runtime behind
   `!clrtest` / `!cs`.
 - Deploy = the extension DLL + a `bridge/` subfolder (bridge DLL + Roslyn deps + runtimeconfig).
-- **Remaining (all optional — the hard architecture is done):** expose threads / modules / heap as
-  typed *queryable objects* so you LINQ the process *state* itself, not just command text or raw bytes
-  (the `Debuggee.Heap` snippet at the top — needs symbol/type interop, à la ClrMD); optionally swap raw
-  `CSharpScript` for `EvaluatorLib` for globals ergonomics (net9↔net10 align).
+- **Remaining (all optional — the hard architecture is done):** `debugger.Modules` ships the
+  typed-queryable-object model; extending it to *threads* and *heap objects* (the `Debuggee.Heap`
+  snippet at the top — heap walking needs symbol/type interop, à la ClrMD) is the last frontier;
+  optionally swap raw `CSharpScript` for `EvaluatorLib` for globals ergonomics (net9↔net10 align).
 
 ## Build & test
 

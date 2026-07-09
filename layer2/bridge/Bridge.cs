@@ -154,6 +154,36 @@ namespace WinDbgAotExt.Bridge
 			byte[] bytes = ReadBytes(address, 4);
 			return bytes.Length == 4 ? BitConverter.ToUInt32(bytes, 0) : 0;
 		}
+
+		// --- Queryable state: loaded modules as typed objects, LINQ-able ---
+		// (Parses `lm` output for now — honest and dependency-free; a future slice can back this with
+		//  IDebugSymbols for robustness. Runs `lm` on each access.)
+		public System.Collections.Generic.List<ModuleInfo> Modules
+		{
+			get
+			{
+				var modules = new System.Collections.Generic.List<ModuleInfo>();
+				foreach (string line in Run("lm").Split('\n'))
+				{
+					string[] fields = line.Trim().Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+					if (fields.Length < 3) continue; // "<start> <end> <name> ..."; addresses use ` as a digit separator
+					if (!ulong.TryParse(fields[0].Replace("`", ""), System.Globalization.NumberStyles.HexNumber, null, out ulong start)) continue;
+					if (!ulong.TryParse(fields[1].Replace("`", ""), System.Globalization.NumberStyles.HexNumber, null, out ulong end)) continue;
+					modules.Add(new ModuleInfo { Name = fields[2], Start = start, End = end });
+				}
+				return modules;
+			}
+		}
+	}
+
+	// A loaded module, parsed from `lm` — enough to LINQ (name, address range, size).
+	public sealed class ModuleInfo
+	{
+		public string Name { get; init; } = "";
+		public ulong Start { get; init; }
+		public ulong End { get; init; }
+		public ulong Size => End - Start;
+		public override string ToString() => $"{Name} @ 0x{Start:x} (0x{Size:x} bytes)";
 	}
 
 	public static class Bridge
