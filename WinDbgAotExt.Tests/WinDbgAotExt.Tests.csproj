@@ -6,6 +6,9 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <IsPackable>false</IsPackable>
     <IsTestProject>true</IsTestProject>
+    <!-- DbgEngOutputTests hand-builds native COM vtables (function pointers + unmanaged memory)
+         to mock IDebugClient/IDebugControl and test the Output-at-vtable-14 path without WinDbg. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
 
   <ItemGroup>
