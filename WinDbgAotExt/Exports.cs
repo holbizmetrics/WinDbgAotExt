@@ -37,4 +37,11 @@ public static unsafe class Exports
 
 	[UnmanagedCallersOnly(EntryPoint = "version")]
 	public static int Version(IntPtr client, byte* args) => CommandHost.Run("version", client, args);
+
+	// Layer 2 commands (boot CoreCLR + run live C# via Roslyn)
+	[UnmanagedCallersOnly(EntryPoint = "clrtest")]
+	public static int ClrTest(IntPtr client, byte* args) => CommandHost.Run("clrtest", client, args);
+
+	[UnmanagedCallersOnly(EntryPoint = "cs")]
+	public static int Cs(IntPtr client, byte* args) => CommandHost.Run("cs", client, args);
 }

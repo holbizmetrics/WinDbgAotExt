@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- LAYER 2 host spike: stands in for the native AOT WinDbg extension. Boots CoreCLR in-process
+       via hostfxr and calls the managed Bridge. Built plain (JIT) first for fast iteration on the
+       hosting interop; flip <PublishAot>true</PublishAot> + `dotnet publish -r win-x64` to confirm
+       the real AOT-host-boots-CoreCLR scenario. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <!-- AOT is REQUIRED, not optional: a managed host already has CoreCLR loaded, so
+         hostfxr_initialize_for_runtime_config fails as a "second init" (0x80008081). NativeAOT has
+         no CoreCLR, so hosting one is the FIRST init and succeeds — same reason the WinDbg extension
+         is AOT. Confirmed empirically 2026-07-09. -->
+    <PublishAot>true</PublishAot>
+  </PropertyGroup>
+
+</Project>

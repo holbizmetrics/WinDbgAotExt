@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- LAYER 2, the managed "brain": a normal JIT-compiled assembly the native AOT host boots via
+       hostfxr and calls into. This is where Roslyn/Evaluator will live (step 2). Right now it only
+       returns a sentinel to prove the native -> CoreCLR -> managed round-trip (step 1).
+       EnableDynamicLoading emits the .runtimeconfig.json + copies deps that hostfxr needs. -->
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <EnableDynamicLoading>true</EnableDynamicLoading>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Roslyn scripting: the runtime C# compiler that runs inside the hosted CoreCLR.
+         (This is the same engine the operator's EvaluatorLib wraps; wired direct here for the seam
+         proof, since EvaluatorLib currently targets net10-windows.) -->
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp.Scripting" Version="4.13.0" />
+  </ItemGroup>
+
+</Project>

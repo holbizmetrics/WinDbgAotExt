@@ -10,7 +10,9 @@ the fly and it compiles and runs immediately against the target** — no edit �
 cycle. It is the C# answer to WinDbg's built-in JavaScript provider (`dx` / `.scriptload`), but
 with the full weight of C# and the entire .NET library ecosystem behind it.
 
-What that unlocks:
+What that unlocks (**illustrative — this is the Layer 2 *goal*, NOT yet built.** Today the extension
+has only the `hello` / `echo` / `version` demo commands; the snippets below are the vision, not
+shipped code — see [Status](#status)):
 
 - **Query the debuggee like a database.** Expose threads, modules, the heap, handles as queryable
   sources and use **LINQ** as your debugger query language:
@@ -74,7 +76,27 @@ output through the live `IDebugControl::Output` path, and returns cleanly — no
     loads, prints via the real Output vtable[14], and quits with no crash. (The Store WinDbg
     package ships a scriptable `cdb.exe` under `…\amd64\cdb.exe`.)
 
-**Layer 2 — not started** (the north star above).
+**Layer 2 — core working.** The extension boots CoreCLR in-process (via `hostfxr`) and runs live
+C# through Roslyn. Load it and type C# at the debugger prompt:
+
+```
+cdb> .load WinDbgAotExt.dll
+cdb> !clrtest
+CLR Ping returned: 4242
+cdb> !cs 1 + 2
+3
+cdb> !cs Enumerable.Range(1,10).Where(x => x % 2 == 0).Sum()
+30
+```
+
+- Native AOT (no CoreCLR of its own) → `hostfxr_initialize_for_runtime_config` is the *first* init in
+  the debugger process, which is why hosting works (a managed host fails `0x80008081`).
+- `layer2/bridge` = the managed "brain" (Roslyn); `layer2/host` = the standalone AOT-hosts-CoreCLR
+  spike; `WinDbgAotExt/ClrHost.cs` = the same, ported into the extension behind `!clrtest` / `!cs`.
+- Deploy = the extension DLL + a `bridge/` subfolder (bridge DLL + Roslyn deps + runtimeconfig).
+- **Remaining:** swap raw `CSharpScript` for the operator's `EvaluatorLib` (globals support; needs a
+  net9↔net10 align), then expose the debuggee (`IDebugDataSpaces`, threads, heap) as script globals →
+  **LINQ over the live process** (the illustrative snippets at the top of this file).
 
 ## Build & test
 
