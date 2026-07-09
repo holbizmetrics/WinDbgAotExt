@@ -360,4 +360,7 @@ MigrationBackup/
 .ionide/
 
 # Fody - auto-generated XML schema
-FodyWeavers.xsdlayer2/deploy/
+FodyWeavers.xsd
+
+# Layer 2 deploy bundle (built artifact: extension DLL + bridge/ subfolder with all deps)
+layer2/deploy/

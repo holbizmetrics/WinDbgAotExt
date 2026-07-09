@@ -1,0 +1,14 @@
+.load C:\FromGithubEtc\WinDbgAotExt\layer2\deploy\WinDbgAotExt.dll
+.echo === clrtest (boot CoreCLR) ===
+!clrtest
+.echo === total heap objects ===
+!cs debugger.Heap.Objects.Count()
+.echo === Widget count (expect 1000) ===
+!cs debugger.Heap.Objects.Count(o => o.TypeName == "Widget")
+.echo === byte[] count (expect >= 50) ===
+!cs debugger.Heap.Objects.Count(o => o.TypeName == "System.Byte[]")
+.echo === a sample Widget object ===
+!cs debugger.Heap.Objects.Where(o => o.TypeName == "Widget").First().ToString()
+.echo === biggest type by total bytes ===
+!cs debugger.Heap.Objects.GroupBy(o => o.TypeName).OrderByDescending(g => g.Sum(o => (long)o.Size)).First().Key
+qd

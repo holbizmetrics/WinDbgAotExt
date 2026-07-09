@@ -174,6 +174,66 @@ namespace WinDbgAotExt.Bridge
 				return modules;
 			}
 		}
+
+		// --- Managed heap as typed objects (ClrMD), the "query the debuggee like a database" pillar ---
+		// Unlike Modules (parsed from `lm` text), this walks the target's real GC heap via ClrMD
+		// (Microsoft.Diagnostics.Runtime), which attaches to the SAME dbgeng session we're already in
+		// through DataTarget.CreateFromDbgEng(_debugClient). Only meaningful when the debuggee is a
+		// managed (.NET) process — a native target has no CLR heap (Heap.ClrPresent == false).
+		//
+		// All ClrMD work stays inside the bridge here; scripts only ever see our own HeapObjectInfo POCO
+		// (defined in this assembly, which Eval already references), so ClrMD never has to load in
+		// Roslyn's script load-context — sidestepping the Layer-2c cross-ALC type-identity trap.
+		public HeapView Heap => new HeapView(_debugClient);
+	}
+
+	// A view over the debuggee's managed GC heap. `.Objects` materializes the walk into plain POCOs so
+	// the caller can LINQ them freely (GroupBy TypeName for a leak-hunt, etc.) without any ClrMD type
+	// crossing back into the script's world.
+	public sealed class HeapView
+	{
+		private readonly IntPtr _debugClient;
+		public HeapView(IntPtr debugClient) { _debugClient = debugClient; }
+
+		// True once a walk found a CLR in the target. Distinguishes "empty heap" from "not a .NET process".
+		public bool ClrPresent { get; private set; }
+
+		public System.Collections.Generic.List<HeapObjectInfo> Objects
+		{
+			get
+			{
+				var heapObjects = new System.Collections.Generic.List<HeapObjectInfo>();
+				if (_debugClient == IntPtr.Zero) return heapObjects;
+
+				// CreateFromDbgEng wraps our existing IDebugClient rather than attaching fresh — this is the
+				// entry point ClrMD keeps specifically for WinDbg extensions. Disposed here so its dbgeng
+				// wrapper is torn down while the debuggee itself keeps running.
+				using var dataTarget = Microsoft.Diagnostics.Runtime.DataTarget.CreateFromDbgEng(_debugClient);
+				if (dataTarget.ClrVersions.Length == 0) return heapObjects; // native target: no managed heap
+				ClrPresent = true;
+
+				using var clrRuntime = dataTarget.ClrVersions[0].CreateRuntime();
+				foreach (var clrObject in clrRuntime.Heap.EnumerateObjects())
+				{
+					heapObjects.Add(new HeapObjectInfo
+					{
+						Address = clrObject.Address,
+						Size = clrObject.Size,
+						TypeName = clrObject.Type?.Name ?? "<unknown>",
+					});
+				}
+				return heapObjects;
+			}
+		}
+	}
+
+	// One managed object on the debuggee's heap, projected to plain fields for LINQ.
+	public sealed class HeapObjectInfo
+	{
+		public ulong Address { get; init; }
+		public ulong Size { get; init; }
+		public string TypeName { get; init; } = "";
+		public override string ToString() => $"{TypeName} @ 0x{Address:x} (0x{Size:x} bytes)";
 	}
 
 	// A loaded module, parsed from `lm` — enough to LINQ (name, address range, size).

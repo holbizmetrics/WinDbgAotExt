@@ -4,8 +4,13 @@
        hostfxr and calls into. This is where Roslyn/Evaluator will live (step 2). Right now it only
        returns a sentinel to prove the native -> CoreCLR -> managed round-trip (step 1).
        EnableDynamicLoading emits the .runtimeconfig.json + copies deps that hostfxr needs. -->
+  <!-- net10.0: ClrMD 4.0 ships a net10 build and expects the net10 System.Reflection.Metadata /
+       System.Collections.Immutable (10.0.x). Targeting net9 forced ClrMD's netstandard2.0 build and
+       resolved Metadata from the 9.0 framework, whose GetBlobContent returns a 9.0 ImmutableArray while
+       ClrMD wanted 10.0 -> MissingMethodException. net10 unifies the whole graph. The AOT extension
+       stays net9; hostfxr boots whatever runtime this bridge's runtimeconfig requests (10.0.9 present). -->
   <PropertyGroup>
-    <TargetFramework>net9.0</TargetFramework>
+    <TargetFramework>net10.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
@@ -17,6 +22,7 @@
          (This is the same engine the operator's EvaluatorLib wraps; wired direct here for the seam
          proof, since EvaluatorLib currently targets net10-windows.) -->
     <PackageReference Include="Microsoft.CodeAnalysis.CSharp.Scripting" Version="4.13.0" />
+    <PackageReference Include="Microsoft.Diagnostics.Runtime" Version="4.0.732401" />
   </ItemGroup>
 
 </Project>
