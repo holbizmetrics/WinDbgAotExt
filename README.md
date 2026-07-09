@@ -50,21 +50,29 @@ So the design is two layers:
 
 ## Status
 
-**Layer 1 — nearly complete.**
+**Layer 1 — complete.** The extension loads into a real debugger, dispatches commands, prints
+output through the live `IDebugControl::Output` path, and returns cleanly — no crash.
 
 - Exports: `DebugExtensionInitialize` (reports v1.1), `DebugExtensionUninitialize`,
   `DebugExtensionNotify`, plus demo commands `hello`, `echo`, `version`.
 - Command dispatch through `CommandHost` with a UTF-8 arg parser; output via the `IDebugControl`
-  vtable (`Output` is index **14**, not 8 — a real bug fixed in `0a4dcbc`).
-- **Two independent test layers, both green:**
-  - `WinDbgAotExt.Tests` — xUnit over the `Argv` parser (**11/11**).
-  - `tools/load-harness.ps1` — native ABI proof *without WinDbg*: LoadLibrary the AOT DLL, resolve
-    every export, call `DebugExtensionInitialize` (assert `S_OK` + version `0x00010001`), dispatch
-    `hello`/`echo`/`version` on the null-client path (**14/14**). This proves the *enter-and-return-
-    cleanly* property outside a debugger.
-- **Remaining for Layer 1:** a real `.load` in WinDbg to exercise the live
-  `IDebugControl::Output` path (vtable[14]) — the one return path the harness cannot reach with a
-  null client.
+  vtable (`Output` is index **14**, not 8 — a real bug fixed in `0a4dcbc`, **confirmed live**).
+- **Three independent test layers, all green:**
+  - `WinDbgAotExt.Tests` — xUnit, **17/17**: the `Argv` parser (11) **plus the native Output path**
+    (6). `DbgEngOutputTests` hand-builds a mock `IDebugClient`/`IDebugControl` with real native
+    vtables, puts a capturing function at `Output` index 14, and asserts the exact bytes each
+    command emits through `enter → QueryInterface → dispatch → Output → return`. No WinDbg needed.
+  - `tools/load-harness.ps1` — native ABI proof *without WinDbg*, **14/14**: LoadLibrary the AOT
+    DLL, resolve every export, call `DebugExtensionInitialize` (assert `S_OK` + version
+    `0x00010001`), dispatch the commands on the null-client path.
+  - **Live `.load` in cdb** — the definitive test against real dbgeng:
+    ```
+    cdb -c ".load WinDbgAotExt.dll; !hello world; !version; q" cmd.exe
+      -> Hello from C# Native AOT! args=[world]
+      -> 1.1
+    ```
+    loads, prints via the real Output vtable[14], and quits with no crash. (The Store WinDbg
+    package ships a scriptable `cdb.exe` under `…\amd64\cdb.exe`.)
 
 **Layer 2 — not started** (the north star above).
 
@@ -98,4 +106,5 @@ To load it in WinDbg once you have the DLL:
 | `WinDbgAotExt/CommandHost.cs` | command registry + dispatch + UTF-8 `Argv` parser; catches everything so nothing escapes the boundary |
 | `WinDbgAotExt/DbgEngInterop.cs` | minimal COM-vtable interop (`QueryInterface`/`Release`/`Output`) for AOT |
 | `WinDbgAotExt.Tests/ArgvTests.cs` | xUnit parser coverage |
+| `WinDbgAotExt.Tests/DbgEngOutputTests.cs` | mock `IDebugControl` — tests the Output vtable[14] path without WinDbg |
 | `tools/load-harness.ps1` | native load-test without WinDbg |
