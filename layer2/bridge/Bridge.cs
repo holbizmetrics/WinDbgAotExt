@@ -1,4 +1,5 @@
 using System;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Text;
 using Microsoft.CodeAnalysis.CSharp.Scripting;
@@ -48,6 +49,66 @@ namespace WinDbgAotExt.Bridge
 				var release = (delegate* unmanaged[Stdcall]<IntPtr, uint>)controlVtable[ReleaseSlot];
 				release(debugControl);
 			}
+		}
+
+		// --- Output capture: run a command and return its text, so scripts can parse/LINQ it ---
+		private const int GetOutputCallbacksSlot = 33;  // IDebugClient::GetOutputCallbacks (verified vs dbgeng.h)
+		private const int SetOutputCallbacksSlot = 34;  // IDebugClient::SetOutputCallbacks
+		private const int OutputCallbackSlot = 3;       // IDebugOutputCallbacks::Output
+		private static readonly Guid IID_IUnknown = new("00000000-0000-0000-C000-000000000046");
+		private static readonly Guid IID_IDebugOutputCallbacks = new("4bf58045-d654-4c40-b0af-683090f356dc");
+
+		private static readonly StringBuilder _capturedOutput = new();
+		private static IntPtr _capturingCallbacks;
+
+		// A managed IDebugOutputCallbacks that appends everything the debugger prints into _capturedOutput.
+		[UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvStdcall) })]
+		private static int CaptureQueryInterface(IntPtr self, Guid* interfaceId, IntPtr* result)
+		{
+			if (interfaceId != null && (*interfaceId == IID_IDebugOutputCallbacks || *interfaceId == IID_IUnknown))
+			{ *result = self; return 0; }
+			if (result != null) *result = IntPtr.Zero;
+			return unchecked((int)0x80004002); // E_NOINTERFACE
+		}
+
+		[UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvStdcall) })]
+		private static uint CaptureAddRefRelease(IntPtr self) => 1;
+
+		[UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvStdcall) })]
+		private static int CaptureOutput(IntPtr self, uint mask, byte* textAnsi)
+		{
+			if (textAnsi != null) _capturedOutput.Append(Marshal.PtrToStringAnsi((IntPtr)textAnsi));
+			return 0;
+		}
+
+		// Build our callbacks object once: a native vtable {QI, AddRef, Release, Output} of function pointers.
+		private static IntPtr GetCapturingCallbacks()
+		{
+			if (_capturingCallbacks != IntPtr.Zero) return _capturingCallbacks;
+			nint* callbackVtable = (nint*)Marshal.AllocHGlobal(IntPtr.Size * 4);
+			callbackVtable[0] = (nint)(delegate* unmanaged[Stdcall]<IntPtr, Guid*, IntPtr*, int>)&CaptureQueryInterface;
+			callbackVtable[1] = (nint)(delegate* unmanaged[Stdcall]<IntPtr, uint>)&CaptureAddRefRelease;
+			callbackVtable[2] = (nint)(delegate* unmanaged[Stdcall]<IntPtr, uint>)&CaptureAddRefRelease;
+			callbackVtable[OutputCallbackSlot] = (nint)(delegate* unmanaged[Stdcall]<IntPtr, uint, byte*, int>)&CaptureOutput;
+			nint* callbacksObject = (nint*)Marshal.AllocHGlobal(IntPtr.Size);
+			callbacksObject[0] = (nint)callbackVtable;
+			_capturingCallbacks = (IntPtr)callbacksObject;
+			return _capturingCallbacks;
+		}
+
+		public string Run(string command)
+		{
+			if (_debugClient == IntPtr.Zero) return "(no debug client)";
+			nint** clientVtable = *(nint***)_debugClient;
+			var getOutputCallbacks = (delegate* unmanaged[Stdcall]<IntPtr, out IntPtr, int>)clientVtable[GetOutputCallbacksSlot];
+			var setOutputCallbacks = (delegate* unmanaged[Stdcall]<IntPtr, IntPtr, int>)clientVtable[SetOutputCallbacksSlot];
+
+			getOutputCallbacks(_debugClient, out IntPtr previousCallbacks); // save whatever the debugger was using
+			_capturedOutput.Clear();
+			setOutputCallbacks(_debugClient, GetCapturingCallbacks());       // install ours
+			try { Exec(command); }                                           // output flows to CaptureOutput
+			finally { setOutputCallbacks(_debugClient, previousCallbacks); } // always restore
+			return _capturedOutput.ToString();
 		}
 	}
 
