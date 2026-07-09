@@ -110,6 +110,50 @@ namespace WinDbgAotExt.Bridge
 			finally { setOutputCallbacks(_debugClient, previousCallbacks); } // always restore
 			return _capturedOutput.ToString();
 		}
+
+		// --- Memory read: pull raw bytes from the target so scripts can inspect it directly ---
+		private const int ReadVirtualSlot = 3;   // IDebugDataSpaces::ReadVirtual (verified vs dbgeng.h)
+		private static readonly Guid IID_IDebugDataSpaces = new("88f7dfab-3ea7-4c3a-aefb-c4e8106173aa");
+
+		public byte[] ReadBytes(ulong address, int count)
+		{
+			if (_debugClient == IntPtr.Zero || count <= 0) return Array.Empty<byte>();
+			nint** clientVtable = *(nint***)_debugClient;
+			var queryInterface = (delegate* unmanaged[Stdcall]<IntPtr, in Guid, out IntPtr, int>)clientVtable[QueryInterfaceSlot];
+			if (queryInterface(_debugClient, IID_IDebugDataSpaces, out IntPtr dataSpaces) != 0 || dataSpaces == IntPtr.Zero)
+				return Array.Empty<byte>();
+			try
+			{
+				nint** dataSpacesVtable = *(nint***)dataSpaces;
+				var readVirtual = (delegate* unmanaged[Stdcall]<IntPtr, ulong, void*, uint, out uint, int>)dataSpacesVtable[ReadVirtualSlot];
+				byte[] buffer = new byte[count];
+				int hresult;
+				uint bytesRead;
+				fixed (byte* bufferPointer = buffer)
+					hresult = readVirtual(dataSpaces, address, bufferPointer, (uint)count, out bytesRead);
+				if (hresult != 0) return Array.Empty<byte>();
+				if (bytesRead < (uint)count) Array.Resize(ref buffer, (int)bytesRead);
+				return buffer;
+			}
+			finally
+			{
+				nint** dataSpacesVtable = *(nint***)dataSpaces;
+				var release = (delegate* unmanaged[Stdcall]<IntPtr, uint>)dataSpacesVtable[ReleaseSlot];
+				release(dataSpaces);
+			}
+		}
+
+		public ulong ReadU64(ulong address)
+		{
+			byte[] bytes = ReadBytes(address, 8);
+			return bytes.Length == 8 ? BitConverter.ToUInt64(bytes, 0) : 0;
+		}
+
+		public uint ReadU32(ulong address)
+		{
+			byte[] bytes = ReadBytes(address, 4);
+			return bytes.Length == 4 ? BitConverter.ToUInt32(bytes, 0) : 0;
+		}
 	}
 
 	public static class Bridge

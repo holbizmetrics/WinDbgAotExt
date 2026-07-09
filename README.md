@@ -10,9 +10,9 @@ the fly and it compiles and runs immediately against the target** — no edit �
 cycle. It is the C# answer to WinDbg's built-in JavaScript provider (`dx` / `.scriptload`), but
 with the full weight of C# and the entire .NET library ecosystem behind it.
 
-What that unlocks (**partly shipped, partly still the goal** — see [Status](#status): running live C#
-and *calling / piping / reformatting* WinDbg commands via `!cs` + `debugger.Run` works today; the
-*heap/threads-as-queryable-objects* snippet just below is still the Layer-2 goal, not yet built):
+What that unlocks (**mostly shipped now** — see [Status](#status): running live C#, *calling / piping /
+reformatting* commands (`!cs` + `debugger.Run`), and *reading target memory* (`debugger.ReadU64`) all
+work today; only the *heap/threads-as-typed-queryable-objects* snippet just below is still the goal):
 
 - **Query the debuggee like a database.** Expose threads, modules, the heap, handles as queryable
   sources and use **LINQ** as your debugger query language:
@@ -91,14 +91,21 @@ cdb> !cs debugger.Exec("? 5 + 5")                        # run a WinDbg command 
 Evaluate expression: 10 = 0xa
 cdb> !cs debugger.Run("lm").Split('\n').Where(l => l.Length > 0).Count()   # LINQ over its output
 21
+cdb> !cs debugger.ReadU32(0x7ffe0000).ToString("x8")    # read raw target memory (matches `dd`)
+00000000
 ```
 
 Scripts reach the live target through a `debugger` object (the debug client, handed in per command):
-`debugger.Exec("cmd")` runs a WinDbg command; `debugger.Run("cmd")` runs it **and returns the output
-as a string**, so you can parse / LINQ / reformat it — the "call → pipe → reformat" pillar, live. The
-dbgeng calls go through vtable indices verified against `dbgeng.h` (`IDebugControl::Execute`=66,
-`IDebugClient::Get/SetOutputCallbacks`=33/34, `IDebugOutputCallbacks::Output`=3), each anchored by the
-known-good `Output`=14 — never guessed (a wrong index is this project's signature crash).
+- `debugger.Exec("cmd")` — run a WinDbg command.
+- `debugger.Run("cmd")` — run it **and return the output as a string**, so you can parse / LINQ /
+  reformat it (the "call → pipe → reformat" pillar).
+- `debugger.ReadBytes(addr, n)` / `ReadU64(addr)` / `ReadU32(addr)` — read raw target memory
+  (`IDebugDataSpaces::ReadVirtual`), cross-checked to agree with the debugger's own `dd`.
+
+Every dbgeng call goes through vtable indices verified against `dbgeng.h` (`IDebugControl::Execute`=66,
+`IDebugClient::Get/SetOutputCallbacks`=33/34, `IDebugOutputCallbacks::Output`=3,
+`IDebugDataSpaces::ReadVirtual`=3), each anchored by the known-good `Output`=14 — never guessed (a
+wrong index is this project's signature crash).
 
 - Native AOT (no CoreCLR of its own) → `hostfxr_initialize_for_runtime_config` is the *first* init in
   the debugger process, which is why hosting works (a managed host fails `0x80008081`).
@@ -106,10 +113,10 @@ known-good `Output`=14 — never guessed (a wrong index is this project's signat
   the standalone AOT-hosts-CoreCLR spike; `WinDbgAotExt/ClrHost.cs` boots the runtime behind
   `!clrtest` / `!cs`.
 - Deploy = the extension DLL + a `bridge/` subfolder (bridge DLL + Roslyn deps + runtimeconfig).
-- **Remaining (all optional now — the hard architecture is done):** memory-read (`debugger.ReadU64`
-  via `IDebugDataSpaces::ReadVirtual`); expose threads / modules / heap as *queryable objects* so you
-  LINQ the process *state* itself, not just command text (the `Debuggee.Heap` snippet at the top);
-  optionally swap raw `CSharpScript` for `EvaluatorLib` for globals ergonomics (net9↔net10 align).
+- **Remaining (all optional — the hard architecture is done):** expose threads / modules / heap as
+  typed *queryable objects* so you LINQ the process *state* itself, not just command text or raw bytes
+  (the `Debuggee.Heap` snippet at the top — needs symbol/type interop, à la ClrMD); optionally swap raw
+  `CSharpScript` for `EvaluatorLib` for globals ergonomics (net9↔net10 align).
 
 ## Build & test
 
