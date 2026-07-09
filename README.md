@@ -10,9 +10,9 @@ the fly and it compiles and runs immediately against the target** — no edit �
 cycle. It is the C# answer to WinDbg's built-in JavaScript provider (`dx` / `.scriptload`), but
 with the full weight of C# and the entire .NET library ecosystem behind it.
 
-What that unlocks (**illustrative — this is the Layer 2 *goal*, NOT yet built.** Today the extension
-has only the `hello` / `echo` / `version` demo commands; the snippets below are the vision, not
-shipped code — see [Status](#status)):
+What that unlocks (**partly shipped, partly still the goal** — see [Status](#status): running live C#
+and *calling / piping / reformatting* WinDbg commands via `!cs` + `debugger.Run` works today; the
+*heap/threads-as-queryable-objects* snippet just below is still the Layer-2 goal, not yet built):
 
 - **Query the debuggee like a database.** Expose threads, modules, the heap, handles as queryable
   sources and use **LINQ** as your debugger query language:
@@ -87,16 +87,29 @@ cdb> !cs 1 + 2
 3
 cdb> !cs Enumerable.Range(1,10).Where(x => x % 2 == 0).Sum()
 30
+cdb> !cs debugger.Exec("? 5 + 5")                        # run a WinDbg command from C#
+Evaluate expression: 10 = 0xa
+cdb> !cs debugger.Run("lm").Split('\n').Where(l => l.Length > 0).Count()   # LINQ over its output
+21
 ```
+
+Scripts reach the live target through a `debugger` object (the debug client, handed in per command):
+`debugger.Exec("cmd")` runs a WinDbg command; `debugger.Run("cmd")` runs it **and returns the output
+as a string**, so you can parse / LINQ / reformat it — the "call → pipe → reformat" pillar, live. The
+dbgeng calls go through vtable indices verified against `dbgeng.h` (`IDebugControl::Execute`=66,
+`IDebugClient::Get/SetOutputCallbacks`=33/34, `IDebugOutputCallbacks::Output`=3), each anchored by the
+known-good `Output`=14 — never guessed (a wrong index is this project's signature crash).
 
 - Native AOT (no CoreCLR of its own) → `hostfxr_initialize_for_runtime_config` is the *first* init in
   the debugger process, which is why hosting works (a managed host fails `0x80008081`).
-- `layer2/bridge` = the managed "brain" (Roslyn); `layer2/host` = the standalone AOT-hosts-CoreCLR
-  spike; `WinDbgAotExt/ClrHost.cs` = the same, ported into the extension behind `!clrtest` / `!cs`.
+- `layer2/bridge` = the managed "brain" (Roslyn + the `Debugger` debuggee surface); `layer2/host` =
+  the standalone AOT-hosts-CoreCLR spike; `WinDbgAotExt/ClrHost.cs` boots the runtime behind
+  `!clrtest` / `!cs`.
 - Deploy = the extension DLL + a `bridge/` subfolder (bridge DLL + Roslyn deps + runtimeconfig).
-- **Remaining:** swap raw `CSharpScript` for the operator's `EvaluatorLib` (globals support; needs a
-  net9↔net10 align), then expose the debuggee (`IDebugDataSpaces`, threads, heap) as script globals →
-  **LINQ over the live process** (the illustrative snippets at the top of this file).
+- **Remaining (all optional now — the hard architecture is done):** memory-read (`debugger.ReadU64`
+  via `IDebugDataSpaces::ReadVirtual`); expose threads / modules / heap as *queryable objects* so you
+  LINQ the process *state* itself, not just command text (the `Debuggee.Heap` snippet at the top);
+  optionally swap raw `CSharpScript` for `EvaluatorLib` for globals ergonomics (net9↔net10 align).
 
 ## Build & test
 
@@ -115,9 +128,11 @@ powershell -ExecutionPolicy Bypass -File tools/load-harness.ps1
 To load it in WinDbg once you have the DLL:
 
 ```
-.load C:\path\to\WinDbgAotExt.dll
+.load C:\path\to\WinDbgAotExt.dll   (needs the bridge/ subfolder alongside it — see Status)
 !hello world
 !version
+!cs Enumerable.Range(1,10).Sum()                  # live C# + LINQ
+!cs debugger.Run("lm").Split('\n').Length         # LINQ over a command's output
 ```
 
 ## Layout
@@ -127,6 +142,9 @@ To load it in WinDbg once you have the DLL:
 | `WinDbgAotExt/Exports.cs` | `[UnmanagedCallersOnly]` exports dbgeng calls at `.load` |
 | `WinDbgAotExt/CommandHost.cs` | command registry + dispatch + UTF-8 `Argv` parser; catches everything so nothing escapes the boundary |
 | `WinDbgAotExt/DbgEngInterop.cs` | minimal COM-vtable interop (`QueryInterface`/`Release`/`Output`) for AOT |
+| `WinDbgAotExt/ClrHost.cs` | boots CoreCLR via `hostfxr` + calls the bridge (behind `!clrtest` / `!cs`) |
+| `layer2/bridge/Bridge.cs` | managed Roslyn engine + the `Debugger` debuggee surface (`Exec` / `Run`) |
+| `layer2/host/Host.cs` | standalone AOT-hosts-CoreCLR spike (proves the seam without WinDbg) |
 | `WinDbgAotExt.Tests/ArgvTests.cs` | xUnit parser coverage |
 | `WinDbgAotExt.Tests/DbgEngOutputTests.cs` | mock `IDebugControl` — tests the Output vtable[14] path without WinDbg |
 | `tools/load-harness.ps1` | native load-test without WinDbg |
