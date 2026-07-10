@@ -31,6 +31,16 @@ public class WilTriageTests
         "000000df`0000bb00 00007ffa`00000003     myapp!Crash+0x10\n" +
         "000000df`0000bb40 00007ffa`00000004     KERNEL32!BaseThreadInitThunk+0x17";
 
+    // The real .ecxr crash stack from the winvpnclient_cli AV dump (fix #2 fixture): frame-numbered `k`,
+    // template symbol with an embedded space (`> >`), framework scaffolding at the bottom. The module must
+    // still resolve to winvpnclient_cli (it sits before the '!' in the first whitespace token).
+    private const string EcxrCrashStack =
+        " # Child-SP          RetAddr               Call Site\n" +
+        "00 000000a7`0f3faa00 00007ff7`b841f3d6     winvpnclient_cli!boost::serialization::singleton<map<iarchive> >::is_destroyed+0x62248\n" +
+        "01 000000a7`0f3faa50 00007ff7`b841892d     winvpnclient_cli!boost::serialization::singleton<map<iarchive> >::is_destroyed+0x6a066\n" +
+        "0e 000000a7`0f3ff940 00007ff8`2bc8af78     kernel32!BaseThreadInitThunk+0x1d\n" +
+        "0f 000000a7`0f3ff970 00000000`00000000     ntdll!RtlUserThreadStart+0x28";
+
     [Fact]
     public void LoaderBreak_IsDeliberate_NotFault_AndNotOverclaimedBenign()
     {
@@ -86,6 +96,19 @@ public class WilTriageTests
         Assert.DoesNotContain("first-chance", verdict);
         Assert.Contains("chance-unknown", verdict);
         Assert.Contains("!analyze -v", verdict);
+    }
+
+    [Fact]
+    public void DumpWithEcxr_NamesTheAppModuleAtCrashSite()
+    {
+        // fix #2: with the stored-exception stack (.ecxr), the culprit is the app crash site (winvpnclient_cli),
+        // not the parked ntdll thread, and the evidence marks it came via .ecxr. Chance stays unknown on a dump.
+        string verdict = WilTriage.Classify(
+            "Last event: 18c8.5b60: Access violation - code c0000005 (first/second chance not available)",
+            EcxrCrashStack, stackFromException: true);
+        Assert.Contains("winvpnclient_cli", verdict);
+        Assert.Contains("via .ecxr", verdict);
+        Assert.DoesNotContain("2nd-chance", verdict);
     }
 
     [Fact]

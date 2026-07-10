@@ -118,9 +118,16 @@ public static unsafe class CommandHost
 		return 0;
 	}
 
-	// Feeds `.lastevent` and `k` to the compiled, unit-tested classifier in the bridge (WilTriage.Classify).
+	// Feeds `.lastevent` + the best available stack to the compiled, unit-tested classifier (WilTriage.Classify).
+	// On a crash dump the current thread is the dump-writer, not the crash site, so prefer the stored exception
+	// context: `.ecxr` sets it and the following `k` walks the real faulting stack. Detected by `.ecxr` printing
+	// a register context ("rip="/"eip="); on a live target with no stored exception `.ecxr` fails harmlessly
+	// ("Unable to get exception context") and `k` stays the current stack -- verified, no corruption.
 	private const string WiltriageScript =
-		"WinDbgAotExt.Bridge.WilTriage.Classify(debugger.Run(\".lastevent\"), debugger.Run(\"k\"))";
+		"var lastEvent = debugger.Run(\".lastevent\");\n" +
+		"var ecxr = debugger.Run(\".ecxr\");\n" +
+		"var hasException = ecxr.Contains(\"rip=\") || ecxr.Contains(\"eip=\");\n" +
+		"return WinDbgAotExt.Bridge.WilTriage.Classify(lastEvent, debugger.Run(\"k\"), hasException);\n";
 
 	// --- Utils ---
 

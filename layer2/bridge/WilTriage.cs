@@ -35,7 +35,7 @@ namespace WinDbgAotExt.Bridge
             "_assert", "_wassert", "FailFast", "ReportFault", "__fastfail",
         };
 
-        public static string Classify(string? lastEventText, string? stackText)
+        public static string Classify(string? lastEventText, string? stackText, bool stackFromException = false)
         {
             lastEventText ??= string.Empty;
             string exceptionCode = ExtractCode(lastEventText);
@@ -46,7 +46,10 @@ namespace WinDbgAotExt.Bridge
                 : chance == "2nd" ? " 2nd-chance"
                 : chance == "1st" ? " 1st-chance"
                 : " chance-unknown";
-            string evidence = $"[code={(exceptionCode.Length == 0 ? "?" : exceptionCode)}{chanceLabel}, top={innermostFrame}]";
+            // stackFromException => the caller walked the stored exception context (.ecxr) instead of the
+            // parked thread -- so the culprit is the real crash site; mark it so the operator knows.
+            string frameSource = stackFromException ? " via .ecxr" : string.Empty;
+            string evidence = $"[code={(exceptionCode.Length == 0 ? "?" : exceptionCode)}{chanceLabel}, top={innermostFrame}{frameSource}]";
 
             if (exceptionCode == "80000003")
             {
