@@ -44,4 +44,8 @@ public static unsafe class Exports
 
 	[UnmanagedCallersOnly(EntryPoint = "cs")]
 	public static int Cs(IntPtr client, byte* args) => CommandHost.Run("cs", client, args);
+
+	// Triage the current break (benign deliberate break vs real fault + culprit module)
+	[UnmanagedCallersOnly(EntryPoint = "wiltriage")]
+	public static int Wiltriage(IntPtr client, byte* args) => CommandHost.Run("wiltriage", client, args);
 }

@@ -20,6 +20,7 @@ public static unsafe class CommandHost
 		Register("version", VersionHandler);
 		Register("clrtest", ClrTestHandler);   // Layer 2, step 3a: boot CoreCLR + Ping -> 4242
 		Register("cs", CsHandler);             // Layer 2, step 3b: run live C# via Roslyn
+		Register("wiltriage", WiltriageHandler); // triage the current break: benign vs fault + culprit
 	}
 
 	public static void Register(string name, CommandHandler handler) => _map[name] = handler;
@@ -101,6 +102,25 @@ public static unsafe class CommandHost
 		DbgEng.DbgOutLine(ctrl, ClrHost.Eval(raw, client));
 		return 0;
 	}
+
+	// !wiltriage : one-word triage of the current break. Reads the exception code from `.lastevent`
+	// (0x80000003 = an int3, a deliberate break, never a hardware fault) and the culprit module from `k`,
+	// then reports mechanism-not-meaning: a breakpoint is "deliberate, process alive" (possibly a tripped
+	// assert/WIL check), and a first-chance AV is distinguished from a real 2nd-chance fault. Packages the
+	// classifier proven at the !cs prompt so a recurring WIL/DebugBreak -- e.g. WSL's wsldevicehost inside a
+	// DllHost COM surrogate -- is one command. The logic lives in the bridge's WilTriage.Classify (real,
+	// unit-tested C#); this handler just feeds it the two command outputs. See README "Roadmap: native
+	// fault-triage surface". v1 = classify; v2 (decode WHY the WIL check tripped) needs symbol-scoped
+	// frame-local reads the extension does not have yet.
+	private static int WiltriageHandler(IntPtr client, IntPtr ctrl, IReadOnlyList<string> __, string ___)
+	{
+		DbgEng.DbgOutLine(ctrl, ClrHost.Eval(WiltriageScript, client));
+		return 0;
+	}
+
+	// Feeds `.lastevent` and `k` to the compiled, unit-tested classifier in the bridge (WilTriage.Classify).
+	private const string WiltriageScript =
+		"WinDbgAotExt.Bridge.WilTriage.Classify(debugger.Run(\".lastevent\"), debugger.Run(\"k\"))";
 
 	// --- Utils ---
 

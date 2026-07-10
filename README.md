@@ -57,7 +57,8 @@ So the design is two layers:
 output through the live `IDebugControl::Output` path, and returns cleanly — no crash.
 
 - Exports: `DebugExtensionInitialize` (reports v1.1), `DebugExtensionUninitialize`,
-  `DebugExtensionNotify`, plus demo commands `hello`, `echo`, `version`.
+  `DebugExtensionNotify`, plus commands `hello`, `echo`, `version`, `clrtest`, `cs`, and
+  `wiltriage` (break triage — see the Roadmap section).
 - Command dispatch through `CommandHost` with a UTF-8 arg parser; output via the `IDebugControl`
   vtable (`Output` is index **14**, not 8 — a real bug fixed in `0a4dcbc`, **confirmed live**).
 - **Three independent test layers, all green:**
@@ -141,6 +142,63 @@ wrong index is this project's signature crash).
   by name, not just its type/size) — the deeper ClrMD surface. Optionally swap raw `CSharpScript` for
   `EvaluatorLib` for globals ergonomics (both are net10 now, so the framework mismatch is gone).
 
+## Roadmap: native fault-triage surface (`!wiltriage`)
+
+Driving specimen (2026-07): a `wil::details::DebugBreak` fired from `wsldevicehost.dll` inside a
+`DllHost.exe` COM surrogate (WSL's device host), on Windows 11 24H2 after the servicing bump
+26100.8521 -> 26100.8655. It *looks* like a crash in WinDbg but isn't: `AeDebug\Auto=1`
+auto-attaches the debugger to a routine WIL break, and there is **zero crash telemetry** (no WER
+report, no Application-Error event) -- the process never dies. The break is noise amplified by the
+postmortem-debugger registration, not a fault. This one specimen split cleanly into "ships today"
+and "the gap", and drove both.
+
+**Ships today -- the classification (`!wiltriage` v1).** The command reads the exception code from
+`.lastevent` and the culprit module from `k`, and reports mechanism-not-meaning. The logic is
+`WinDbgAotExt.Bridge.WilTriage.Classify` (real, unit-tested C#); `!wiltriage` just feeds it the two
+command outputs. Live-proven in cdb; every path is covered by `WinDbgAotExt.Tests/WilTriageTests.cs`.
+On the driving specimen it reports:
+
+```
+DELIBERATE int3 break in wsldevicehost -- no hardware fault, process is alive. Likely benign
+(WIL/loader/manual break) but may be a tripped assert/WIL check -- 'g' to continue, or decode the
+reason. [code=80000003 1st-chance, top=KERNELBASE!wil::details::DebugBreak+0x2]
+```
+
+Two lessons banked by *running and auditing* it, not by reasoning:
+- **Key on the exception code, not a symbol allowlist.** An early cut matched only
+  `wil::details::DebugBreak` / `DbgBreakPoint` and misfired on `ntdll!LdrpDoDebuggerBreak` (a benign
+  loader break) -- calling it a fault. `0x80000003` is an int3, deliberate by definition, never a
+  hardware fault.
+- **The code is the mechanism, not the meaning.** A TRIAD/KG audit caught v1 overclaiming "BENIGN /
+  no crash occurred" for *every* int3 -- but a `__debugbreak` assert, a WIL check, or a
+  heap-corruption break is also `0x80000003` and is a real failure. So a breakpoint is reported
+  "deliberate, process alive (possibly a tripped assert/WIL check)", a failure-marker frame
+  (`RtlpBreakPointHeap`/`FailFast`/`_assert`) is flagged for investigation, and a first-chance AV is
+  distinguished from a real 2nd-chance fault. The loader-break and specimen cases are pinned in
+  `WilTriageTests.cs` so the classifier cannot regress.
+
+**The gap -- decoding *why* the WIL check tripped (`!wiltriage` v2).** WIL stashes the real reason
+(HRESULT, file, line, function, message) in a `wil::FailureInfo` struct; this break's exception
+record carried `Parameter[0]=0`, so the reason is only recoverable by reading that struct out of
+the failing frame's locals. The extension cannot do this yet. Four capabilities, none currently on
+the Remaining list above, are required -- in priority order:
+
+1. `debugger.LastEvent` -- exception code + record as a typed object
+   (`IDebugControl::GetLastEventInformation`). Also retires v1's `.lastevent` string-sniffing.
+2. `debugger.Stack` -- stack frames as typed objects (module / offset / **symbol** / disp), the
+   native twin of `debugger.Modules`.
+3. a symbol resolver -- address -> `module!symbol+disp` via `IDebugSymbols` (the slice the Modules
+   note already anticipates).
+4. frame-scoped local / typed-struct read -- pull `wil::FailureInfo` from a frame's locals; the
+   native twin of the ClrMD heap-object *field* access above.
+
+Honest blocker on v2 for this specimen specifically: `wsldevicehost` has no public PDBs, so even
+with (1)-(4) the local read needs private symbols Microsoft does not ship. The capabilities are
+still worth building -- they apply to any symbol-available native target -- but this exact break
+stays classify-only until symbols exist. That the by-hand diagnosis and the extension hit the
+*same* wall (symbol-scoped local reads) is the finding: the missing feature and the missing
+diagnosis are one capability.
+
 ## Build & test
 
 ```powershell
@@ -174,9 +232,12 @@ To load it in WinDbg once you have the DLL:
 | `WinDbgAotExt/DbgEngInterop.cs` | minimal COM-vtable interop (`QueryInterface`/`Release`/`Output`) for AOT |
 | `WinDbgAotExt/ClrHost.cs` | boots CoreCLR via `hostfxr` + calls the bridge (behind `!clrtest` / `!cs`) |
 | `layer2/bridge/Bridge.cs` | managed Roslyn engine + the `Debugger` debuggee surface (`Exec` / `Run` / `ReadU64` / `Modules` / `Heap`) |
+| `layer2/bridge/WilTriage.cs` | pure break-triage classifier behind `!wiltriage` (compiled into the bridge, linked into the tests) |
 | `layer2/host/Host.cs` | standalone AOT-hosts-CoreCLR spike (proves the seam without WinDbg) |
 | `tools/heaptarget/` | a managed test debuggee (allocates 1000 known objects, parks) for exercising `debugger.Heap` |
 | `tools/heapwalk.cdb` | cdb script: attach, `.load`, LINQ the heap — the `debugger.Heap` live test |
+| `tools/wiltriage.cdb` | cdb script: `.load`, boot CoreCLR, `!wiltriage` — the break-triage live test |
 | `WinDbgAotExt.Tests/ArgvTests.cs` | xUnit parser coverage |
 | `WinDbgAotExt.Tests/DbgEngOutputTests.cs` | mock `IDebugControl` — tests the Output vtable[14] path without WinDbg |
+| `WinDbgAotExt.Tests/WilTriageTests.cs` | golden tests for every `WilTriage.Classify` path (no debugger needed) |
 | `tools/load-harness.ps1` | native load-test without WinDbg |

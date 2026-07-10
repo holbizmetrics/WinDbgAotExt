@@ -1,0 +1,12 @@
+$$ Live-check for !wiltriage. Usage: cdb -cf tools\wiltriage.cdb <target.exe>
+$$ Exercises load -> CoreCLR boot -> command dispatch -> Layer-2 classifier -> output.
+$$ Against a target's initial break (code 80000003), expect:
+$$   BENIGN breakpoint (deliberate) in <module|unknown> -- 'g' to continue; no crash occurred
+$$ (culprit is 'unknown' when every frame is framework, e.g. cmd.exe's all-ntdll loader break;
+$$  it names the first non-framework module otherwise, e.g. wsldevicehost on the WSL device-host break.)
+.load C:\FromGithubEtc\WinDbgAotExt\layer2\deploy\WinDbgAotExt.dll
+.echo === clrtest (boot CoreCLR) ===
+!clrtest
+.echo === !wiltriage (classify current break: benign deliberate break vs real fault + culprit) ===
+!wiltriage
+qd

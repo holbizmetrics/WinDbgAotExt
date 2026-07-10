@@ -23,4 +23,11 @@
     <ProjectReference Include="..\WinDbgAotExt\WinDbgAotExt.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- Link (not reference) the pure classifier from the bridge: it is net10, this project is net9,
+         so a project reference is illegal, but the source is dependency-free C# that compiles under both.
+         This unit-tests every WilTriage.Classify path without a live debugger. -->
+    <Compile Include="..\layer2\bridge\WilTriage.cs" Link="WilTriage.cs" />
+  </ItemGroup>
+
 </Project>
