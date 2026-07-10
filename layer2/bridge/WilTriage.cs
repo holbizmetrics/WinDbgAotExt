@@ -39,11 +39,13 @@ namespace WinDbgAotExt.Bridge
         {
             lastEventText ??= string.Empty;
             string exceptionCode = ExtractCode(lastEventText);
-            bool isSecondChance = lastEventText.IndexOf("second chance", StringComparison.OrdinalIgnoreCase) >= 0;
+            string chance = ExtractChance(lastEventText);   // "1st" | "2nd" | "unknown"
             string culpritModule = FindCulprit(stackText, out string innermostFrame);
 
             string chanceLabel = exceptionCode.Length == 0 ? string.Empty
-                : isSecondChance ? " 2nd-chance" : " 1st-chance";
+                : chance == "2nd" ? " 2nd-chance"
+                : chance == "1st" ? " 1st-chance"
+                : " chance-unknown";
             string evidence = $"[code={(exceptionCode.Length == 0 ? "?" : exceptionCode)}{chanceLabel}, top={innermostFrame}]";
 
             if (exceptionCode == "80000003")
@@ -56,9 +58,11 @@ namespace WinDbgAotExt.Bridge
             }
             if (exceptionCode == "c0000005")
             {
-                return isSecondChance
-                    ? $"REAL FAULT: unhandled (2nd-chance) access violation in {culpritModule} -- run !analyze -v. {evidence}"
-                    : $"first-chance access violation in {culpritModule} -- often handled by the target; a real fault only if it reaches 2nd chance. {evidence}";
+                if (chance == "2nd")
+                    return $"REAL FAULT: unhandled (2nd-chance) access violation in {culpritModule} -- run !analyze -v. {evidence}";
+                if (chance == "1st")
+                    return $"first-chance access violation in {culpritModule} -- often handled by the target; a real fault only if it reaches 2nd chance. {evidence}";
+                return $"access violation in {culpritModule} -- chance not recorded (typical of a crash dump = the unhandled fault); run !analyze -v. {evidence}";
             }
             return $"unclassified break in {culpritModule} -- run !analyze -v. {evidence}";
         }
@@ -72,6 +76,17 @@ namespace WinDbgAotExt.Bridge
             int end = start;
             while (end < lastEventText.Length && Uri.IsHexDigit(lastEventText[end])) end++;
             return lastEventText.Substring(start, end - start).ToLowerInvariant();
+        }
+
+        // First/second chance from `.lastevent`. A crash dump renders "(first/second chance not available)"
+        // -- return unknown, NOT second-chance: the old Contains("second chance") matched that substring
+        // (the winvpnclient_cli crash-dump false-positive found by a cold test).
+        private static string ExtractChance(string lastEventText)
+        {
+            if (lastEventText.IndexOf("not available", StringComparison.OrdinalIgnoreCase) >= 0) return "unknown";
+            if (lastEventText.IndexOf("second chance", StringComparison.OrdinalIgnoreCase) >= 0) return "2nd";
+            if (lastEventText.IndexOf("first chance", StringComparison.OrdinalIgnoreCase) >= 0) return "1st";
+            return "unknown";
         }
 
         // First non-framework frame's module. innermostFrame is the innermost resolvable call site (evidence).

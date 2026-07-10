@@ -75,6 +75,20 @@ public class WilTriageTests
     }
 
     [Fact]
+    public void DumpChanceNotAvailable_IsNotFalselyLabelledSecondChance()
+    {
+        // A crash dump renders "(first/second chance not available)"; the old Contains("second chance")
+        // matched that substring (the winvpnclient_cli AV dump, found by a cold test). Must read
+        // chance-unknown, not 2nd-chance — and never claim a chance the dump didn't record.
+        string verdict = WilTriage.Classify(
+            "Last event: 18c8.5b60: Access violation - code c0000005 (first/second chance not available)", AppAvStack);
+        Assert.DoesNotContain("2nd-chance", verdict);
+        Assert.DoesNotContain("first-chance", verdict);
+        Assert.Contains("chance-unknown", verdict);
+        Assert.Contains("!analyze -v", verdict);
+    }
+
+    [Fact]
     public void UnknownCode_FallsBackToAnalyze()
     {
         string verdict = WilTriage.Classify("... code e0434352 (first chance)", AppAvStack);
