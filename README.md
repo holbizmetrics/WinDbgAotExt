@@ -199,6 +199,40 @@ stays classify-only until symbols exist. That the by-hand diagnosis and the exte
 *same* wall (symbol-scoped local reads) is the finding: the missing feature and the missing
 diagnosis are one capability.
 
+## Install & run in WinDbg
+
+Nothing works until the extension is loaded -- so this is the load-bearing part. It runs in both
+**WinDbgX** (the Store / Preview GUI) and **cdb** (the scriptable console) -- same dbgeng under both.
+
+**Prerequisites:** the **.NET 10 runtime** (the hosted CoreCLR the bridge boots -- `dotnet --list-runtimes`
+should list a `Microsoft.NETCore.App 10.0.x`). To *build* it you also need the .NET SDK + the VS C++
+toolchain (for the AOT native link).
+
+**What you load** is a deploy bundle = `WinDbgAotExt.dll` **plus a `bridge/` subfolder next to it**
+(the bridge DLL + its Roslyn/ClrMD deps + runtimeconfig). `layer2/deploy/` is gitignored (a build
+artifact), so a fresh clone has to build it:
+
+```powershell
+# 1. the AOT extension DLL (vswhere must be on PATH for the native link -- it lives in
+#    "C:\Program Files (x86)\Microsoft Visual Studio\Installer")
+dotnet publish WinDbgAotExt/WinDbgAotExt.csproj -c Release -r win-x64
+# 2. the bridge (net10) + all its deps
+dotnet build layer2/bridge/WinDbgAotExt.Bridge.csproj -c Release
+# 3. assemble the bundle: put the published WinDbgAotExt.dll next to a `bridge/` folder holding the
+#    bridge build output (WinDbgAotExt.Bridge.dll + deps + *.runtimeconfig.json).
+#    The working bundle in this repo is layer2/deploy/ -- mirror that layout.
+```
+
+**Load and use** -- in the WinDbgX command window or cdb, at any break:
+
+```
+.load C:\path\to\WinDbgAotExt.dll     # needs the bridge/ subfolder alongside it
+!wiltriage                            # triage the current break: deliberate int3 vs real fault + culprit
+```
+
+The first `!wiltriage` (or `!cs`) boots CoreCLR in-process -- a ~1-2 s pause, once per session. cdb
+one-liner: `cdb -c ".load <path>\WinDbgAotExt.dll; !wiltriage; q" <target.exe>`.
+
 ## Build & test
 
 ```powershell
@@ -219,6 +253,7 @@ To load it in WinDbg once you have the DLL:
 .load C:\path\to\WinDbgAotExt.dll   (needs the bridge/ subfolder alongside it — see Status)
 !hello world
 !version
+!wiltriage                                        # triage the current break (benign vs fault + culprit)
 !cs Enumerable.Range(1,10).Sum()                  # live C# + LINQ
 !cs debugger.Run("lm").Split('\n').Length         # LINQ over a command's output
 ```
