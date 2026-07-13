@@ -56,25 +56,30 @@ So the design is two layers:
 **Layer 1 — complete.** The extension loads into a real debugger, dispatches commands, prints
 output through the live `IDebugControl::Output` path, and returns cleanly — no crash.
 
-- Exports: `DebugExtensionInitialize` (reports the version declared in `CommandHost.EXT_VERSION_*`, today v1.3), `DebugExtensionUninitialize`,
-  `DebugExtensionNotify`, plus commands `hello`, `echo`, `version`, `clrtest`, `cs`, and
-  `wiltriage` (break triage — see the Roadmap section), and `csreset` (clear the persistent `!cs` session).
+- Exports: `DebugExtensionInitialize` (reports the version declared in `CommandHost.EXT_VERSION_*`,
+  today v1.3), `DebugExtensionUninitialize`, `DebugExtensionNotify`, plus commands `hello`, `echo`,
+  `version`, `clrtest`, `cs`, `csreset` (clear the persistent `!cs` session), and `wiltriage`
+  (break triage — see the Roadmap section).
 - Command dispatch through `CommandHost` with a UTF-8 arg parser; output via the `IDebugControl`
   vtable (`Output` is index **14**, not 8 — a real bug fixed in `0a4dcbc`, **confirmed live**).
 - **Three independent test layers, all green:**
-  - `WinDbgAotExt.Tests` — xUnit, **37/37**: the `Argv` parser (11), **the native Output path**
-    (6), the `WilTriage` classifier goldens (9), and the typed last-event decoder + typed-classify
-    goldens (11). `DbgEngOutputTests` hand-builds a mock `IDebugClient`/`IDebugControl` with real native
+  - `WinDbgAotExt.Tests` — xUnit, **45/45**: the `Argv` parser (11), **the native Output path**
+    (9, including the printf-format-string class — `Output` is a *varargs* method, so a `%s` in
+    echoed text used to make the engine dereference a garbage pointer), the `WilTriage` classifier
+    goldens (9), and the typed last-event decoder + typed-classify goldens (16).
+    `DbgEngOutputTests` hand-builds a mock `IDebugClient`/`IDebugControl` with real native
     vtables, puts a capturing function at `Output` index 14, and asserts the exact bytes each
     command emits through `enter → QueryInterface → dispatch → Output → return`. No WinDbg needed.
-  - `tools/load-harness.ps1` — native ABI proof *without WinDbg*, **14/14**: LoadLibrary the AOT
-    DLL, resolve every export, call `DebugExtensionInitialize` (assert `S_OK` + version
-    matching the source-declared version), resolve ALL 9 exports, dispatch the commands on the null-client path.
+  - `tools/load-harness.ps1` — native ABI proof *without WinDbg*, **18/18**: LoadLibrary the AOT
+    DLL, resolve **all 10 exports** (including the CLR-backed `clrtest`/`cs`/`csreset`/`wiltriage`,
+    so a trimming change that silently dropped the headline command cannot stay green), call
+    `DebugExtensionInitialize` (assert `S_OK` + the version the source declares), dispatch the
+    commands on the null-client path, negative-control a bogus export name.
   - **Live `.load` in cdb** — the definitive test against real dbgeng:
     ```
     cdb -c ".load WinDbgAotExt.dll; !hello world; !version; q" cmd.exe
       -> Hello from C# Native AOT! args=[world]
-      -> 1.1
+      -> 1.3
     ```
     loads, prints via the real Output vtable[14], and quits with no crash. (The Store WinDbg
     package ships a scriptable `cdb.exe` under `…\amd64\cdb.exe`.)
