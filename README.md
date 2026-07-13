@@ -62,8 +62,8 @@ output through the live `IDebugControl::Output` path, and returns cleanly — no
 - Command dispatch through `CommandHost` with a UTF-8 arg parser; output via the `IDebugControl`
   vtable (`Output` is index **14**, not 8 — a real bug fixed in `0a4dcbc`, **confirmed live**).
 - **Three independent test layers, all green:**
-  - `WinDbgAotExt.Tests` — xUnit, **17/17**: the `Argv` parser (11) **plus the native Output path**
-    (6). `DbgEngOutputTests` hand-builds a mock `IDebugClient`/`IDebugControl` with real native
+  - `WinDbgAotExt.Tests` — xUnit, **26/26**: the `Argv` parser (11), **the native Output path**
+    (6), and the `WilTriage` classifier goldens (9). `DbgEngOutputTests` hand-builds a mock `IDebugClient`/`IDebugControl` with real native
     vtables, puts a capturing function at `Output` index 14, and asserts the exact bytes each
     command emits through `enter → QueryInterface → dispatch → Output → return`. No WinDbg needed.
   - `tools/load-harness.ps1` — native ABI proof *without WinDbg*, **14/14**: LoadLibrary the AOT

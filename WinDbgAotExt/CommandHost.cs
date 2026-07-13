@@ -87,10 +87,10 @@ public static unsafe class CommandHost
 	// Layer 2, step 3a: prove the AOT extension can boot CoreCLR in the debugger's process.
 	private static int ClrTestHandler(IntPtr _, IntPtr ctrl, IReadOnlyList<string> __, string ___)
 	{
-		var err = ClrHost.EnsureBooted();
-		if (err != null) { DbgEng.DbgOutLine(ctrl, "CLR host boot FAILED: " + err); return unchecked((int)0x80004005); }
-		int r = ClrHost.Ping();
-		DbgEng.DbgOutLine(ctrl, $"CLR Ping returned: {r}  (expected 4242)");
+		var bootError = ClrHost.EnsureBooted();
+		if (bootError != null) { DbgEng.DbgOutLine(ctrl, "CLR host boot FAILED: " + bootError); return unchecked((int)0x80004005); }
+		int pingResult = ClrHost.Ping();
+		DbgEng.DbgOutLine(ctrl, $"CLR Ping returned: {pingResult}  (expected 4242)");
 		return 0;
 	}
 

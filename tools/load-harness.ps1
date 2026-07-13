@@ -38,21 +38,21 @@ using System;
 using System.Runtime.InteropServices;
 public static class Loader {
     [DllImport("kernel32", SetLastError=true, CharSet=CharSet.Unicode)] public static extern IntPtr LoadLibrary(string path);
-    [DllImport("kernel32", SetLastError=true, CharSet=CharSet.Ansi)]    public static extern IntPtr GetProcAddress(IntPtr h, string name);
-    [DllImport("kernel32")] public static extern bool FreeLibrary(IntPtr h);
+    [DllImport("kernel32", SetLastError=true, CharSet=CharSet.Ansi)]    public static extern IntPtr GetProcAddress(IntPtr moduleHandle, string name);
+    [DllImport("kernel32")] public static extern bool FreeLibrary(IntPtr moduleHandle);
 
     // On win-x64 there is a single calling convention, so the delegate convention is moot.
-    [UnmanagedFunctionPointer(CallingConvention.StdCall)] public delegate int InitDel(ref uint version, ref uint flags);
-    [UnmanagedFunctionPointer(CallingConvention.StdCall)] public delegate int CmdDel(IntPtr client, IntPtr args);
+    [UnmanagedFunctionPointer(CallingConvention.StdCall)] public delegate int InitializeDelegate(ref uint version, ref uint flags);
+    [UnmanagedFunctionPointer(CallingConvention.StdCall)] public delegate int CommandDelegate(IntPtr client, IntPtr args);
 
-    public static int CallInit(IntPtr fn, out uint version, out uint flags){
+    public static int CallInit(IntPtr functionPointer, out uint version, out uint flags){
         version = 0; flags = 0;
-        var d = (InitDel)Marshal.GetDelegateForFunctionPointer(fn, typeof(InitDel));
-        return d(ref version, ref flags);
+        var initializeDelegate = (InitializeDelegate)Marshal.GetDelegateForFunctionPointer(functionPointer, typeof(InitializeDelegate));
+        return initializeDelegate(ref version, ref flags);
     }
-    public static int CallCmd(IntPtr fn){
-        var d = (CmdDel)Marshal.GetDelegateForFunctionPointer(fn, typeof(CmdDel));
-        return d(IntPtr.Zero, IntPtr.Zero);   // null client + null args = the guarded/safe path
+    public static int CallCmd(IntPtr functionPointer){
+        var commandDelegate = (CommandDelegate)Marshal.GetDelegateForFunctionPointer(functionPointer, typeof(CommandDelegate));
+        return commandDelegate(IntPtr.Zero, IntPtr.Zero);   // null client + null args = the guarded/safe path
     }
 }
 '@
@@ -63,41 +63,41 @@ function Check($name, $cond, $detail){
   else     { Write-Host ("  FAIL  {0,-32} {1}" -f $name, $detail) -ForegroundColor Red;   $script:fail++ }
 }
 
-$h = [Loader]::LoadLibrary($Dll)
-Check "LoadLibrary" ($h -ne [IntPtr]::Zero) ("handle=0x{0:X}" -f $h.ToInt64())
-if($h -eq [IntPtr]::Zero){ Write-Host "cannot continue - DLL failed to load (LastError $([Runtime.InteropServices.Marshal]::GetLastWin32Error()))" -ForegroundColor Red; exit 1 }
+$moduleHandle = [Loader]::LoadLibrary($Dll)
+Check "LoadLibrary" ($moduleHandle -ne [IntPtr]::Zero) ("handle=0x{0:X}" -f $moduleHandle.ToInt64())
+if($moduleHandle -eq [IntPtr]::Zero){ Write-Host "cannot continue - DLL failed to load (LastError $([Runtime.InteropServices.Marshal]::GetLastWin32Error()))" -ForegroundColor Red; exit 1 }
 
 # 1. every expected export must resolve
 $exports = 'DebugExtensionInitialize','DebugExtensionUninitialize','DebugExtensionNotify','hello','echo','version'
-$addr = @{}
-foreach($e in $exports){
-  $p = [Loader]::GetProcAddress($h, $e)
-  $addr[$e] = $p
-  Check "export: $e" ($p -ne [IntPtr]::Zero) ("addr=0x{0:X}" -f $p.ToInt64())
+$exportAddresses = @{}
+foreach($exportName in $exports){
+  $exportAddress = [Loader]::GetProcAddress($moduleHandle, $exportName)
+  $exportAddresses[$exportName] = $exportAddress
+  Check "export: $exportName" ($exportAddress -ne [IntPtr]::Zero) ("addr=0x{0:X}" -f $exportAddress.ToInt64())
 }
 
 # 2. negative control: a name that must NOT exist
-$bogus = [Loader]::GetProcAddress($h, 'this_export_does_not_exist')
+$bogus = [Loader]::GetProcAddress($moduleHandle, 'this_export_does_not_exist')
 Check "negative-control" ($bogus -eq [IntPtr]::Zero) "bogus name correctly did not resolve"
 
 # 3. DebugExtensionInitialize -> S_OK + version 0x00010001 (major<<16 | minor = 1.1)
-if($addr['DebugExtensionInitialize'] -ne [IntPtr]::Zero){
-  $ver = 0; $flags = 0
-  $rc = [Loader]::CallInit($addr['DebugExtensionInitialize'], [ref]$ver, [ref]$flags)
-  Check "Init returns S_OK" ($rc -eq 0) ("hr=0x{0:X8}" -f $rc)
-  Check "Init version 0x00010001" ($ver -eq 0x00010001) ("version=0x{0:X8} (expected 0x00010001 = v1.1)" -f $ver)
+if($exportAddresses['DebugExtensionInitialize'] -ne [IntPtr]::Zero){
+  $extensionVersion = 0; $flags = 0
+  $hresult = [Loader]::CallInit($exportAddresses['DebugExtensionInitialize'], [ref]$extensionVersion, [ref]$flags)
+  Check "Init returns S_OK" ($hresult -eq 0) ("hresult=0x{0:X8}" -f $hresult)
+  Check "Init version 0x00010001" ($extensionVersion -eq 0x00010001) ("version=0x{0:X8} (expected 0x00010001 = v1.1)" -f $extensionVersion)
   Check "Init flags 0" ($flags -eq 0) ("flags=0x{0:X8}" -f $flags)
 }
 
 # 4. commands with a null client -> guarded path returns S_OK without crashing
-foreach($cmd in 'hello','echo','version'){
-  if($addr[$cmd] -ne [IntPtr]::Zero){
-    $rc = [Loader]::CallCmd($addr[$cmd])
-    Check "call '$cmd' (null client)" ($rc -eq 0) ("hr=0x{0:X8} - dispatched + returned without crash" -f $rc)
+foreach($commandName in 'hello','echo','version'){
+  if($exportAddresses[$commandName] -ne [IntPtr]::Zero){
+    $hresult = [Loader]::CallCmd($exportAddresses[$commandName])
+    Check "call '$commandName' (null client)" ($hresult -eq 0) ("hresult=0x{0:X8} - dispatched + returned without crash" -f $hresult)
   }
 }
 
-[void][Loader]::FreeLibrary($h)
+[void][Loader]::FreeLibrary($moduleHandle)
 
 Write-Host ""
 Write-Host ("RESULT: {0} passed, {1} failed" -f $pass, $fail) -ForegroundColor $(if($fail -eq 0){'Green'}else{'Red'})

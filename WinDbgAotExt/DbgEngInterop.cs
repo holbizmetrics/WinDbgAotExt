@@ -17,25 +17,25 @@ public static unsafe class DbgEng
 	public const uint DEBUG_OUTPUT_NORMAL = 0x00000001;
 
 	// QueryInterface helper for raw COM pointers (IUnknown*)
-	public static int QueryInterface(IntPtr punk, in Guid iid, out IntPtr ppv) // returns HRESULT
+	public static int QueryInterface(IntPtr unknownPointer, in Guid iid, out IntPtr interfacePointer) // returns HRESULT
 	{
-		var vtbl = *(nint**)punk;
-		var qi = (delegate* unmanaged[Stdcall]<IntPtr, in Guid, out IntPtr, int>)vtbl[0];
-		return qi(punk, iid, out ppv);
+		var vtable = *(nint**)unknownPointer;
+		var queryInterface = (delegate* unmanaged[Stdcall]<IntPtr, in Guid, out IntPtr, int>)vtable[0];
+		return queryInterface(unknownPointer, iid, out interfacePointer);
 	}
 
-	public static uint AddRef(IntPtr punk)
+	public static uint AddRef(IntPtr unknownPointer)
 	{
-		var vtbl = *(nint**)punk;
-		var addref = (delegate* unmanaged[Stdcall]<IntPtr, uint>)vtbl[1];
-		return addref(punk);
+		var vtable = *(nint**)unknownPointer;
+		var addRef = (delegate* unmanaged[Stdcall]<IntPtr, uint>)vtable[1];
+		return addRef(unknownPointer);
 	}
 
-	public static uint Release(IntPtr punk)
+	public static uint Release(IntPtr unknownPointer)
 	{
-		var vtbl = *(nint**)punk;
-		var release = (delegate* unmanaged[Stdcall]<IntPtr, uint>)vtbl[2];
-		return release(punk);
+		var vtable = *(nint**)unknownPointer;
+		var release = (delegate* unmanaged[Stdcall]<IntPtr, uint>)vtable[2];
+		return release(unknownPointer);
 	}
 
 	// Example: call IDebugControl::Output (simplified for baseline interface)
@@ -48,17 +48,17 @@ public static unsafe class DbgEng
 	{
 		// IDebugControl vtable: after IUnknown (0/1/2), Output is index 14 — NOT 8
 		// (index 8 is OpenLogFile). Verified against dbgeng.h. This was the bug.
-		var vtbl = *(nint**)pControl;
-		var output = (delegate* unmanaged[Stdcall]<IntPtr, uint, sbyte*, int>)vtbl[14];
+		var vtable = *(nint**)pControl;
+		var output = (delegate* unmanaged[Stdcall]<IntPtr, uint, sbyte*, int>)vtable[14];
 
-		fixed (byte* p = utf8NoNul)
+		fixed (byte* sourcePointer = utf8NoNul)
 		{
 			// Ensure NUL-terminated buffer
-			var tmp = stackalloc byte[utf8NoNul.Length + 1];
-			for (int i = 0; i < utf8NoNul.Length; i++) tmp[i] = p[i];
-			tmp[utf8NoNul.Length] = 0;
+			var terminatedBuffer = stackalloc byte[utf8NoNul.Length + 1];
+			for (int i = 0; i < utf8NoNul.Length; i++) terminatedBuffer[i] = sourcePointer[i];
+			terminatedBuffer[utf8NoNul.Length] = 0;
 
-			return output(pControl, mask, (sbyte*)tmp);
+			return output(pControl, mask, (sbyte*)terminatedBuffer);
 		}
 	}
 

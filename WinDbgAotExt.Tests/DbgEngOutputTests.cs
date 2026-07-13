@@ -44,35 +44,35 @@ public unsafe class DbgEngOutputTests
 
     // --- build the two fake COM objects (object = pointer to a vtable of function pointers) ---
 
-    private static IntPtr MakeObject(nint* vtbl)
+    private static IntPtr MakeObject(nint* vtable)
     {
-        var obj = (nint*)Marshal.AllocHGlobal(IntPtr.Size);
-        obj[0] = (nint)vtbl;
-        return (IntPtr)obj;
+        var comObject = (nint*)Marshal.AllocHGlobal(IntPtr.Size);
+        comObject[0] = (nint)vtable;
+        return (IntPtr)comObject;
     }
 
     private static IntPtr BuildMockClient()
     {
         // IDebugControl vtable: needs at least index 14. 0/1/2 = QI/AddRef/Release, 14 = Output.
-        var ctrl = (nint*)Marshal.AllocHGlobal(IntPtr.Size * 15);
-        for (int i = 0; i < 15; i++) ctrl[i] = 0;
-        ctrl[1]  = (nint)(delegate* unmanaged[Stdcall]<IntPtr, uint>)&AddRefRelease;
-        ctrl[2]  = (nint)(delegate* unmanaged[Stdcall]<IntPtr, uint>)&AddRefRelease;
-        ctrl[14] = (nint)(delegate* unmanaged[Stdcall]<IntPtr, uint, sbyte*, int>)&Output;
-        s_control = MakeObject(ctrl);
+        var controlVtable = (nint*)Marshal.AllocHGlobal(IntPtr.Size * 15);
+        for (int i = 0; i < 15; i++) controlVtable[i] = 0;
+        controlVtable[1]  = (nint)(delegate* unmanaged[Stdcall]<IntPtr, uint>)&AddRefRelease;
+        controlVtable[2]  = (nint)(delegate* unmanaged[Stdcall]<IntPtr, uint>)&AddRefRelease;
+        controlVtable[14] = (nint)(delegate* unmanaged[Stdcall]<IntPtr, uint, sbyte*, int>)&Output;
+        s_control = MakeObject(controlVtable);
 
         // IDebugClient vtable: 0 = QI (returns the control), 1/2 = AddRef/Release.
-        var cli = (nint*)Marshal.AllocHGlobal(IntPtr.Size * 3);
-        cli[0] = (nint)(delegate* unmanaged[Stdcall]<IntPtr, Guid*, IntPtr*, int>)&ClientQueryInterface;
-        cli[1] = (nint)(delegate* unmanaged[Stdcall]<IntPtr, uint>)&AddRefRelease;
-        cli[2] = (nint)(delegate* unmanaged[Stdcall]<IntPtr, uint>)&AddRefRelease;
-        return MakeObject(cli);
+        var clientVtable = (nint*)Marshal.AllocHGlobal(IntPtr.Size * 3);
+        clientVtable[0] = (nint)(delegate* unmanaged[Stdcall]<IntPtr, Guid*, IntPtr*, int>)&ClientQueryInterface;
+        clientVtable[1] = (nint)(delegate* unmanaged[Stdcall]<IntPtr, uint>)&AddRefRelease;
+        clientVtable[2] = (nint)(delegate* unmanaged[Stdcall]<IntPtr, uint>)&AddRefRelease;
+        return MakeObject(clientVtable);
     }
 
     private static int RunCommand(string name, IntPtr client, string args)
     {
-        var utf8 = Encoding.UTF8.GetBytes(args + "\0"); // CommandHost reads a NUL-terminated arg string
-        fixed (byte* p = utf8) { return CommandHost.Run(name, client, p); }
+        var argumentBytes = Encoding.UTF8.GetBytes(args + "\0"); // CommandHost reads a NUL-terminated arg string
+        fixed (byte* argumentPointer = argumentBytes) { return CommandHost.Run(name, client, argumentPointer); }
     }
 
     // --- tests ---
@@ -81,8 +81,8 @@ public unsafe class DbgEngOutputTests
     public void Hello_WithArgs_EmitsThroughOutputVtable14()
     {
         s_captured = null;
-        int hr = RunCommand("hello", BuildMockClient(), "world");
-        Assert.Equal(0, hr);
+        int hresult = RunCommand("hello", BuildMockClient(), "world");
+        Assert.Equal(0, hresult);
         Assert.Equal("Hello from C# Native AOT! args=[world]\n", s_captured);
     }
 
@@ -90,8 +90,8 @@ public unsafe class DbgEngOutputTests
     public void Hello_NoArgs_EmitsNoArgsForm()
     {
         s_captured = null;
-        int hr = RunCommand("hello", BuildMockClient(), "");
-        Assert.Equal(0, hr);
+        int hresult = RunCommand("hello", BuildMockClient(), "");
+        Assert.Equal(0, hresult);
         Assert.Equal("Hello from C# Native AOT! (no args)\n", s_captured);
     }
 
@@ -99,8 +99,8 @@ public unsafe class DbgEngOutputTests
     public void Echo_EmitsRawThroughOutput()
     {
         s_captured = null;
-        int hr = RunCommand("echo", BuildMockClient(), "some raw text");
-        Assert.Equal(0, hr);
+        int hresult = RunCommand("echo", BuildMockClient(), "some raw text");
+        Assert.Equal(0, hresult);
         Assert.Equal("some raw text\n", s_captured);
     }
 
@@ -108,8 +108,8 @@ public unsafe class DbgEngOutputTests
     public void Version_EmitsVersionString()
     {
         s_captured = null;
-        int hr = RunCommand("version", BuildMockClient(), "");
-        Assert.Equal(0, hr);
+        int hresult = RunCommand("version", BuildMockClient(), "");
+        Assert.Equal(0, hresult);
         Assert.Equal($"{CommandHost.EXT_VERSION_MAJOR}.{CommandHost.EXT_VERSION_MINOR}\n", s_captured);
     }
 
@@ -118,8 +118,8 @@ public unsafe class DbgEngOutputTests
     {
         // WinDbg can pass a NULL client; CommandHost skips QueryInterface and DbgOutLine no-ops.
         s_captured = null;
-        int hr = RunCommand("hello", IntPtr.Zero, "x");
-        Assert.Equal(0, hr);
+        int hresult = RunCommand("hello", IntPtr.Zero, "x");
+        Assert.Equal(0, hresult);
         Assert.Null(s_captured);
     }
 
@@ -127,8 +127,8 @@ public unsafe class DbgEngOutputTests
     public void UnknownCommand_ReturnsFail_NoCrash()
     {
         s_captured = null;
-        int hr = RunCommand("does_not_exist", BuildMockClient(), "");
-        Assert.NotEqual(0, hr); // E_FAIL, cleanly - and the "Unknown command" line went to Output
+        int hresult = RunCommand("does_not_exist", BuildMockClient(), "");
+        Assert.NotEqual(0, hresult); // E_FAIL, cleanly - and the "Unknown command" line went to Output
         Assert.Equal("Unknown command 'does_not_exist'\n", s_captured);
     }
 }
