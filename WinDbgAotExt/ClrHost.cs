@@ -9,7 +9,7 @@ namespace WinDbgAotExt;
 // LAYER 2 inside the extension: boots CoreCLR in-process (via hostfxr) and calls the managed Bridge,
 // so a WinDbg command can run live C# through Roslyn. The extension is NativeAOT (no CoreCLR of its
 // own), so our hostfxr_initialize_for_runtime_config is the FIRST init in the debugger's process —
-// which is exactly why this works (proven in the layer2/ spike; this ports it into the .load'able DLL).
+// which is exactly why this works (proven in the host/ spike; this ports it into the .load'able DLL).
 internal static unsafe class ClrHost
 {
 	private const int RuntimeDelegateLoadAssemblyAndGetFunctionPointer = 5;

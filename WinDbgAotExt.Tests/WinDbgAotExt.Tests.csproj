@@ -27,11 +27,11 @@
     <!-- Link (not reference) the pure classifier from the bridge: it is net10, this project is net9,
          so a project reference is illegal, but the source is dependency-free C# that compiles under both.
          This unit-tests every WilTriage.Classify path without a live debugger. -->
-    <Compile Include="..\layer2\bridge\WilTriage.cs" Link="WilTriage.cs" />
+    <Compile Include="..\bridge\WilTriage.cs" Link="WilTriage.cs" />
     <!-- Same pattern for the typed last-event decoder: pure buffer-offset code (the exact layer
          where this repo's interop bugs have lived), unit-tested against hand-built
          DEBUG_LAST_EVENT_INFO_EXCEPTION buffers without a live debugger. -->
-    <Compile Include="..\layer2\bridge\LastEventInfo.cs" Link="LastEventInfo.cs" />
+    <Compile Include="..\bridge\LastEventInfo.cs" Link="LastEventInfo.cs" />
   </ItemGroup>
 
 </Project>

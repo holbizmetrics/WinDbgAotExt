@@ -129,7 +129,7 @@ wrong index is this project's signature crash).
 
 - Native AOT (no CoreCLR of its own) → `hostfxr_initialize_for_runtime_config` is the *first* init in
   the debugger process, which is why hosting works (a managed host fails `0x80008081`).
-- `layer2/bridge` = the managed "brain" (Roslyn + the `Debugger` debuggee surface); `layer2/host` =
+- `bridge` = the managed "brain" (Roslyn + the `Debugger` debuggee surface); `host` =
   the standalone AOT-hosts-CoreCLR spike; `WinDbgAotExt/ClrHost.cs` boots the runtime behind
   `!clrtest` / `!cs`.
 - Deploy = the extension DLL + a `bridge/` subfolder (bridge DLL + Roslyn deps + ClrMD deps +
@@ -215,7 +215,7 @@ should list a `Microsoft.NETCore.App 10.0.x`). To *build* it you also need the .
 toolchain (for the AOT native link).
 
 **What you load** is a deploy bundle = `WinDbgAotExt.dll` **plus a `bridge/` subfolder next to it**
-(the bridge DLL + its Roslyn/ClrMD deps + runtimeconfig). `layer2/deploy/` is gitignored (a build
+(the bridge DLL + its Roslyn/ClrMD deps + runtimeconfig). `deploy/` is gitignored (a build
 artifact), so a fresh clone has to build it:
 
 ```powershell
@@ -223,10 +223,10 @@ artifact), so a fresh clone has to build it:
 #    "C:\Program Files (x86)\Microsoft Visual Studio\Installer")
 dotnet publish WinDbgAotExt/WinDbgAotExt.csproj -c Release -r win-x64
 # 2. the bridge (net10) + all its deps
-dotnet build layer2/bridge/WinDbgAotExt.Bridge.csproj -c Release
+dotnet build bridge/WinDbgAotExt.Bridge.csproj -c Release
 # 3. assemble the bundle: put the published WinDbgAotExt.dll next to a `bridge/` folder holding the
 #    bridge build output (WinDbgAotExt.Bridge.dll + deps + *.runtimeconfig.json).
-#    The working bundle in this repo is layer2/deploy/ -- mirror that layout.
+#    The working bundle in this repo is deploy/ -- mirror that layout.
 ```
 
 **Load and use** -- in the WinDbgX command window or cdb, at any break:
@@ -272,10 +272,10 @@ To load it in WinDbg once you have the DLL:
 | `WinDbgAotExt/CommandHost.cs` | command registry + dispatch + UTF-8 `Argv` parser; catches everything so nothing escapes the boundary |
 | `WinDbgAotExt/DbgEngInterop.cs` | minimal COM-vtable interop (`QueryInterface`/`Release`/`Output`) for AOT |
 | `WinDbgAotExt/ClrHost.cs` | boots CoreCLR via `hostfxr` + calls the bridge (behind `!clrtest` / `!cs`) |
-| `layer2/bridge/Bridge.cs` | managed Roslyn engine + the `Debugger` debuggee surface (`Exec` / `Run` / `ReadU64` / `Modules` / `Heap`) |
-| `layer2/bridge/WilTriage.cs` | pure break-triage classifier behind `!wiltriage` (compiled into the bridge, linked into the tests) |
-| `layer2/bridge/LastEventInfo.cs` | typed last-event POCO + pure `DEBUG_LAST_EVENT_INFO_EXCEPTION` buffer decoder (offsets unit-tested; feeds `WilTriage` typed path) |
-| `layer2/host/Host.cs` | standalone AOT-hosts-CoreCLR spike (proves the seam without WinDbg) |
+| `bridge/Bridge.cs` | managed Roslyn engine + the `Debugger` debuggee surface (`Exec` / `Run` / `ReadU64` / `Modules` / `Heap`) |
+| `bridge/WilTriage.cs` | pure break-triage classifier behind `!wiltriage` (compiled into the bridge, linked into the tests) |
+| `bridge/LastEventInfo.cs` | typed last-event POCO + pure `DEBUG_LAST_EVENT_INFO_EXCEPTION` buffer decoder (offsets unit-tested; feeds `WilTriage` typed path) |
+| `host/Host.cs` | standalone AOT-hosts-CoreCLR spike (proves the seam without WinDbg) |
 | `tools/heaptarget/` | a managed test debuggee (allocates 1000 known objects, parks) for exercising `debugger.Heap` |
 | `tools/heapwalk.cdb` | cdb script: attach, `.load`, LINQ the heap — the `debugger.Heap` live test |
 | `tools/wiltriage.cdb` | cdb script: `.load`, boot CoreCLR, `!wiltriage` — the break-triage live test |
