@@ -164,21 +164,25 @@ namespace WinDbgAotExt.Bridge
 		private const uint DEBUG_DUMP_SMALL = 1024;          // lowest dump qualifier; >= means dump target
 
 		// True when the target is a dump file rather than a live process (GetDebuggeeType
-		// qualifier >= DEBUG_DUMP_SMALL). Dumps carry no live first/second-chance semantics.
-		public bool IsDumpTarget
+		// qualifier >= DEBUG_DUMP_SMALL); false when live; NULL when the query itself failed.
+		// The null case is load-bearing -- callers must NOT collapse "couldn't tell" into "live",
+		// or a dump whose stored FirstChance is 0 gets read as a real 2nd-chance fault, resurrecting
+		// on the error path the exact false positive the typed path exists to kill. LastEventInfo.Chance
+		// funnels null to "unknown".
+		public bool? IsDumpTarget
 		{
 			get
 			{
-				if (_debugClient == IntPtr.Zero) return false;
+				if (_debugClient == IntPtr.Zero) return null;
 				nint** clientVtable = *(nint***)_debugClient;
 				var queryInterface = (delegate* unmanaged[Stdcall]<IntPtr, in Guid, out IntPtr, int>)clientVtable[QueryInterfaceSlot];
 				if (queryInterface(_debugClient, IID_IDebugControl, out IntPtr debugControl) != 0 || debugControl == IntPtr.Zero)
-					return false;
+					return null;
 				try
 				{
 					nint** controlVtable = *(nint***)debugControl;
 					var getDebuggeeType = (delegate* unmanaged[Stdcall]<IntPtr, out uint, out uint, int>)controlVtable[GetDebuggeeTypeSlot];
-					if (getDebuggeeType(debugControl, out uint targetClass, out uint qualifier) != 0) return false;
+					if (getDebuggeeType(debugControl, out uint targetClass, out uint qualifier) != 0) return null;
 					return qualifier >= DEBUG_DUMP_SMALL;
 				}
 				finally { ReleaseInterface(debugControl); }

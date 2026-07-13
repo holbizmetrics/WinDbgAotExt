@@ -1,4 +1,4 @@
-.load C:\FromGithubEtc\WinDbgAotExt\layer2\deploy\WinDbgAotExt.dll
+.load C:\FromGithubEtc\WinDbgAotExt\deploy\WinDbgAotExt.dll
 .echo === clrtest (boot CoreCLR) ===
 !clrtest
 .echo === total heap objects ===

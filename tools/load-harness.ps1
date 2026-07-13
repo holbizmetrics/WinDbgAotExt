@@ -68,7 +68,13 @@ Check "LoadLibrary" ($moduleHandle -ne [IntPtr]::Zero) ("handle=0x{0:X}" -f $mod
 if($moduleHandle -eq [IntPtr]::Zero){ Write-Host "cannot continue - DLL failed to load (LastError $([Runtime.InteropServices.Marshal]::GetLastWin32Error()))" -ForegroundColor Red; exit 1 }
 
 # 1. every expected export must resolve
-$exports = 'DebugExtensionInitialize','DebugExtensionUninitialize','DebugExtensionNotify','hello','echo','version'
+# EVERY export, including the CLR-backed commands (clrtest/cs/wiltriage). Resolving them is what
+# catches an AOT/trimming change silently dropping the headline command from the shipped DLL -- the
+# old list stopped at 'version', so CI could ship a bundle with no !wiltriage and stay green.
+# They are RESOLVED but not CALLED here: invoking them boots CoreCLR, which needs the bridge/ folder
+# and is the live-cdb layer's job, not the native-ABI layer's.
+$exports = 'DebugExtensionInitialize','DebugExtensionUninitialize','DebugExtensionNotify',
+           'hello','echo','version','clrtest','cs','wiltriage'
 $exportAddresses = @{}
 foreach($exportName in $exports){
   $exportAddress = [Loader]::GetProcAddress($moduleHandle, $exportName)

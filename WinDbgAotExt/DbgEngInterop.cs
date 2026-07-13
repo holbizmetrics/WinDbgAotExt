@@ -44,12 +44,31 @@ public static unsafe class DbgEng
 	// you can define a shim for a fixed string without format args if you target a newer interface,
 	// or use OutputWide if convenient. Here is a minimal "fixed format" call using UTF-8.
 
+	// Output is a printf-style VARARGS method -- STDMETHODV(Output)(ULONG Mask, PCSTR Format, ...)
+	// in dbgeng.h -- so whatever is passed here is parsed by the engine as a FORMAT STRING. Anything
+	// reaching this function must already have its '%' escaped (see EscapeFormat); we pass zero
+	// varargs, so an unescaped conversion makes the engine read arguments that were never pushed:
+	// '%s' dereferences a garbage pointer and '%n' is a WRITE. Repro'd live before the fix --
+	// "!echo 100%s and %x" printed "100" and swallowed the rest.
+	// Beyond ~1 KB the copy goes on the heap: this runs on the engine's own callback thread, and a
+	// stackalloc sized by (unbounded) command output -- e.g. a heap dump from !cs -- would overflow
+	// its stack and fail-fast the debugger.
+	private const int StackCopyLimit = 1024;
+
 	public static int ControlOutput(IntPtr pControl, uint mask, ReadOnlySpan<byte> utf8NoNul)
 	{
 		// IDebugControl vtable: after IUnknown (0/1/2), Output is index 14 — NOT 8
 		// (index 8 is OpenLogFile). Verified against dbgeng.h. This was the bug.
 		var vtable = *(nint**)pControl;
 		var output = (delegate* unmanaged[Stdcall]<IntPtr, uint, sbyte*, int>)vtable[14];
+
+		if (utf8NoNul.Length + 1 > StackCopyLimit)
+		{
+			byte[] heapBuffer = new byte[utf8NoNul.Length + 1]; // zero-filled => already NUL-terminated
+			utf8NoNul.CopyTo(heapBuffer);
+			fixed (byte* heapPointer = heapBuffer)
+				return output(pControl, mask, (sbyte*)heapPointer);
+		}
 
 		fixed (byte* sourcePointer = utf8NoNul)
 		{
@@ -62,11 +81,15 @@ public static unsafe class DbgEng
 		}
 	}
 
+	// Neutralize printf conversions in text that is DATA, not a format: the engine collapses "%%"
+	// back to a single '%', so the operator still reads what the command meant to print.
+	internal static string EscapeFormat(string text) => text.Replace("%", "%%");
+
 	public static void DbgOutLine(IntPtr pControl, string text)
 	{
 		if (pControl == IntPtr.Zero) return;
 		if (!text.EndsWith("\n")) text += "\n";
-		var bytes = Encoding.UTF8.GetBytes(text);
+		var bytes = Encoding.UTF8.GetBytes(EscapeFormat(text));
 		_ = ControlOutput(pControl, DEBUG_OUTPUT_NORMAL, bytes);
 	}
 }

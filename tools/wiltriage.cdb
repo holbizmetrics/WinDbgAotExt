@@ -1,10 +1,13 @@
 $$ Live-check for !wiltriage. Usage: cdb -cf tools\wiltriage.cdb <target.exe>
 $$ Exercises load -> CoreCLR boot -> command dispatch -> Layer-2 classifier -> output.
-$$ Against a target's initial break (code 80000003), expect:
-$$   BENIGN breakpoint (deliberate) in <module|unknown> -- 'g' to continue; no crash occurred
+$$ Against a target's initial break (code 80000003), expect a verdict of the form:
+$$   DELIBERATE int3 break in <module|unknown> -- no hardware fault, process is alive. Likely benign
+$$   (WIL/loader/manual break) but may be a tripped assert/WIL check ... [code=80000003 1st-chance, top=...]
+$$ (The retired v1 wording "BENIGN ... no crash occurred" was an audit-caught overclaim: an int3 is a
+$$  deliberate MECHANISM, which says nothing about whether an assert/failfast tripped it.)
 $$ (culprit is 'unknown' when every frame is framework, e.g. cmd.exe's all-ntdll loader break;
 $$  it names the first non-framework module otherwise, e.g. wsldevicehost on the WSL device-host break.)
-.load C:\FromGithubEtc\WinDbgAotExt\layer2\deploy\WinDbgAotExt.dll
+.load C:\FromGithubEtc\WinDbgAotExt\deploy\WinDbgAotExt.dll
 .echo === clrtest (boot CoreCLR) ===
 !clrtest
 .echo === !wiltriage (classify current break: benign deliberate break vs real fault + culprit) ===

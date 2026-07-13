@@ -68,7 +68,11 @@ namespace WinDbgAotExt.Bridge
             string frameSource = stackFromException ? " via .ecxr" : string.Empty;
             string evidence = $"[code={(exceptionCode.Length == 0 ? "?" : exceptionCode)}{chanceLabel}, top={innermostFrame}{frameSource}]";
 
-            if (exceptionCode == "80000003")
+            // 80000003 = STATUS_BREAKPOINT (int3). 4000001f = STATUS_WX86_BREAKPOINT -- the SAME
+            // deliberate break raised from 32-bit code under WOW64. Without it, a DebugBreak() in a
+            // WOW64 target fell through to "unclassified" (audit finding; the framework-module list
+            // already knew about wow64 stacks, the exception-code list did not).
+            if (exceptionCode == "80000003" || exceptionCode == "4000001f")
             {
                 bool looksLikeFailure = FailureBreakMarkers.Any(
                     marker => innermostFrame.IndexOf(marker, StringComparison.OrdinalIgnoreCase) >= 0);

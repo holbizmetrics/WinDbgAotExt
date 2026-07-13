@@ -30,14 +30,24 @@ namespace WinDbgAotExt.Bridge
         // Raw FirstChance ULONG from dbgeng (nonzero = first chance). On a DUMP target the stored
         // value carries no live chance semantics -- use Chance, which folds that in.
         public uint FirstChanceRaw { get; init; }
-        // True when the target is a dump (GetDebuggeeType qualifier >= DEBUG_DUMP_SMALL). Matches
-        // `.lastevent`'s "(first/second chance not available)" rendering on dumps.
-        public bool IsDumpTarget { get; init; }
+        // True when the target is a dump (GetDebuggeeType qualifier >= DEBUG_DUMP_SMALL), false when
+        // live, NULL when the query itself failed. The null case is load-bearing: an UNKNOWN target
+        // kind must NOT be assumed live, or a dump's stored FirstChance=0 reads as a real 2nd-chance
+        // fault -- resurrecting on the error path the exact false positive this typed path exists to
+        // kill (the winvpnclient_cli cold-dump class).
+        public bool? IsDumpTarget { get; init; }
+        // False when no exception record was actually decoded (wrong event type, or a buffer shorter
+        // than the record). Distinguishes "read as second chance" from "never read at all" -- without
+        // it a zeroed/short buffer silently reports 2nd-chance.
+        public bool ExceptionRecordDecoded { get; init; }
 
         // "1st" | "2nd" | "unknown" -- the exact vocabulary WilTriage.Classify already speaks.
+        // EVERY uncertainty (not an exception / record not decoded / dump / unknown target kind)
+        // funnels to "unknown": the honest answer, and the one that does not accuse the target of a
+        // fault it may not have committed.
         public string Chance =>
-            !IsException ? "unknown"
-            : IsDumpTarget ? "unknown"
+            !IsException || !ExceptionRecordDecoded ? "unknown"
+            : IsDumpTarget != false ? "unknown"
             : FirstChanceRaw != 0 ? "1st"
             : "2nd";
 
@@ -47,11 +57,14 @@ namespace WinDbgAotExt.Bridge
         private const int ExceptionCodeOffset = 0;
         private const int ExceptionAddressOffset = 16;
         private const int FirstChanceOffset = 152;
+        // MINIMUM bytes that must be present to decode the record -- NOT the C sizeof, which pads to
+        // 160 (152 + 4, rounded to 8-byte alignment). dbgeng may legitimately report 160 used; we
+        // require >= this and clamp. Never use this as the size of a buffer you WRITE.
         public const int ExceptionExtraInformationSize = 156;
 
         public static LastEventInfo Decode(
             uint eventType, uint processId, uint threadId, string description,
-            ReadOnlySpan<byte> extraInformation, bool isDumpTarget)
+            ReadOnlySpan<byte> extraInformation, bool? isDumpTarget)
         {
             bool hasExceptionRecord =
                 eventType == DEBUG_EVENT_EXCEPTION
@@ -63,6 +76,7 @@ namespace WinDbgAotExt.Bridge
                 ThreadId = threadId,
                 Description = description,
                 IsDumpTarget = isDumpTarget,
+                ExceptionRecordDecoded = hasExceptionRecord,
                 ExceptionCode = hasExceptionRecord ? ReadU32(extraInformation, ExceptionCodeOffset) : 0,
                 ExceptionAddress = hasExceptionRecord ? ReadU64(extraInformation, ExceptionAddressOffset) : 0,
                 FirstChanceRaw = hasExceptionRecord ? ReadU32(extraInformation, FirstChanceOffset) : 0,

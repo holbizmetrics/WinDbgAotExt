@@ -22,9 +22,14 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: write   # gh release create; the repo default token is read-only (verified) -> 403 without this
+
 jobs:
   build-test-bundle:
-    runs-on: windows-latest
+    # Image PINNED, not windows-latest: NativeAOT links against the image's MSVC toolchain, so a
+    # runner-image rollover can turn a green repo red with a linker error and no code change.
+    runs-on: windows-2025
     steps:
       - uses: actions/checkout@v4
 
@@ -64,6 +69,7 @@ jobs:
         with:
           name: WinDbgAotExt-bundle
           path: bundle
+          retention-days: 30
 
       - name: Release (tag-gated)
         if: startsWith(github.ref, 'refs/tags/v')

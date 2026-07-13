@@ -1,6 +1,7 @@
 using System;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using System.Linq;
 using System.Text;
 using WinDbgAotExt;
 using Xunit;
@@ -111,6 +112,56 @@ public unsafe class DbgEngOutputTests
         int hresult = RunCommand("version", BuildMockClient(), "");
         Assert.Equal(0, hresult);
         Assert.Equal($"{CommandHost.EXT_VERSION_MAJOR}.{CommandHost.EXT_VERSION_MINOR}\n", s_captured);
+    }
+
+    // --- the printf-format-string class (audit HIGH, repro'd live before the fix) ---
+    // IDebugControl::Output is VARARGS: STDMETHODV(Output)(ULONG Mask, PCSTR Format, ...). Text handed
+    // to it is parsed as a FORMAT, and we pass zero varargs -- so an unescaped '%s' made the engine
+    // dereference a garbage pointer and '%n' WRITE through one. Live repro before the fix:
+    // "!echo 100%s and %x" printed "100" and swallowed the rest. The mock cannot printf-parse, so these
+    // tests assert the ESCAPING contract at the boundary instead: every '%' reaching Output is doubled,
+    // which the engine collapses back to a single '%' for the operator.
+
+    [Fact]
+    public void Echo_PercentConversions_AreEscapedBeforeReachingOutput()
+    {
+        s_captured = null;
+        int hresult = RunCommand("echo", BuildMockClient(), "100%s and %x and %n");
+        Assert.Equal(0, hresult);
+        // What the engine receives: conversions neutralized (%% renders as a literal % downstream).
+        Assert.Equal("100%%s and %%x and %%n\n", s_captured);
+        // Every '%' must be part of a "%%" pair -- i.e. no lone '%' can start a conversion. (Naive
+        // "does not contain %s" would be wrong: "100%%s" contains "%s" as a substring by construction.)
+        Assert.All(
+            Enumerable.Range(0, s_captured!.Length).Where(index => s_captured[index] == '%'),
+            index => Assert.True(
+                (index > 0 && s_captured[index - 1] == '%') ||
+                (index + 1 < s_captured.Length && s_captured[index + 1] == '%'),
+                $"unescaped '%' at position {index} would be read as a printf conversion"));
+    }
+
+    [Fact]
+    public void Output_PlainText_IsUnchangedByEscaping()
+    {
+        // The escape must not disturb ordinary output -- the regression that would make the fix worse
+        // than the bug.
+        s_captured = null;
+        int hresult = RunCommand("echo", BuildMockClient(), "no conversions here");
+        Assert.Equal(0, hresult);
+        Assert.Equal("no conversions here\n", s_captured);
+    }
+
+    [Fact]
+    public void Output_LargePayload_GoesThroughHeapPathIntact()
+    {
+        // Beyond the stack-copy limit the buffer is heap-allocated: !cs output (a heap dump, a full
+        // `k`) is unbounded and a stackalloc that size would overflow the ENGINE's callback thread and
+        // fail-fast the debugger. Assert the big payload still arrives byte-exact and NUL-terminated.
+        s_captured = null;
+        string largeText = new string('A', 64 * 1024);
+        int hresult = RunCommand("echo", BuildMockClient(), largeText);
+        Assert.Equal(0, hresult);
+        Assert.Equal(largeText + "\n", s_captured);
     }
 
     [Fact]

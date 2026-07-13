@@ -89,8 +89,74 @@ public class LastEventInfoTests
             LastEventInfo.DEBUG_EVENT_EXCEPTION, 0, 0, "",
             new byte[8], isDumpTarget: false);
         Assert.True(lastEvent.IsException);
+        Assert.False(lastEvent.ExceptionRecordDecoded);
         Assert.Equal(0u, lastEvent.ExceptionCode);
         Assert.Equal(0ul, lastEvent.ExceptionAddress);
+    }
+
+    // --- the "uncertainty must never read as a fault" contract (audit: converged MED) ---
+    // Two arms found the same hole: a chance that was never READ decoded to FirstChanceRaw=0, which
+    // the old ternary reported as "2nd" -- i.e. "unhandled REAL FAULT". That is the winvpnclient_cli
+    // false positive resurrected on the error path, in the very code written to kill it. Every
+    // uncertainty must funnel to "unknown".
+
+    [Fact]
+    public void Chance_TruncatedRecord_IsUnknown_NotSecondChance()
+    {
+        var lastEvent = LastEventInfo.Decode(
+            LastEventInfo.DEBUG_EVENT_EXCEPTION, 0, 0, "",
+            new byte[8], isDumpTarget: false);   // record never decoded
+        Assert.Equal("unknown", lastEvent.Chance);
+    }
+
+    [Fact]
+    public void Chance_UnknownTargetKind_IsUnknown_NotSecondChance()
+    {
+        // GetDebuggeeType failed -> IsDumpTarget is null. A dump's stored FirstChance=0 must NOT be
+        // read as a live 2nd-chance fault just because we couldn't tell what kind of target it is.
+        var lastEvent = LastEventInfo.Decode(
+            LastEventInfo.DEBUG_EVENT_EXCEPTION, 0, 0, "",
+            ExceptionExtraInformation(0xC0000005, 0x1000, firstChance: 0), isDumpTarget: null);
+        Assert.Equal("unknown", lastEvent.Chance);
+    }
+
+    [Fact]
+    public void ClassifyTyped_UnknownTargetKind_DoesNotAccuseARealFault()
+    {
+        var lastEvent = LastEventInfo.Decode(
+            LastEventInfo.DEBUG_EVENT_EXCEPTION, 0, 0, "",
+            ExceptionExtraInformation(0xC0000005, 0x1000, firstChance: 0), isDumpTarget: null);
+        string verdict = WilTriage.Classify(lastEvent, UserFaultStack);
+        Assert.DoesNotContain("REAL FAULT", verdict);
+        Assert.Contains("chance not recorded", verdict);
+    }
+
+    [Fact]
+    public void ClassifyTyped_Wow64Int3_IsDeliberate_NotUnclassified()
+    {
+        // STATUS_WX86_BREAKPOINT (0x4000001f): the same DebugBreak(), raised from 32-bit code under
+        // WOW64. It used to fall through to "unclassified break -- run !analyze -v".
+        var lastEvent = LastEventInfo.Decode(
+            LastEventInfo.DEBUG_EVENT_EXCEPTION, 0, 0, "",
+            ExceptionExtraInformation(0x4000001F, 0x2000, firstChance: 1), isDumpTarget: false);
+        string verdict = WilTriage.Classify(lastEvent, UserFaultStack);
+        Assert.Contains("DELIBERATE", verdict);
+        Assert.DoesNotContain("unclassified", verdict);
+    }
+
+    [Fact]
+    public void Decode_ExceptionBufferAtCSizeof160_DecodesTheSameAs156()
+    {
+        // dbgeng may report 160 bytes used (the C sizeof pads 152+4 to 8-byte alignment); the decoder
+        // requires >= 156 and must read the same fields from the padded buffer.
+        byte[] padded = new byte[160];
+        ExceptionExtraInformation(0xC0000005, 0xDEAD, firstChance: 1).CopyTo(padded, 0);
+        var lastEvent = LastEventInfo.Decode(
+            LastEventInfo.DEBUG_EVENT_EXCEPTION, 0, 0, "", padded, isDumpTarget: false);
+        Assert.True(lastEvent.ExceptionRecordDecoded);
+        Assert.Equal(0xC0000005u, lastEvent.ExceptionCode);
+        Assert.Equal(0xDEADul, lastEvent.ExceptionAddress);
+        Assert.Equal("1st", lastEvent.Chance);
     }
 
     // --- Typed Classify: the same verdicts the text path produces, from structured input ---

@@ -34,7 +34,13 @@ internal static unsafe class ClrHost
 			_bridgeDllPath = Path.Combine(bridgeDirectory, "WinDbgAotExt.Bridge.dll");
 			string runtimeConfigPath = Path.Combine(bridgeDirectory, "WinDbgAotExt.Bridge.runtimeconfig.json");
 			if (!File.Exists(runtimeConfigPath))
-				return "bridge runtimeconfig not found next to extension: " + runtimeConfigPath;
+				// Say what to DO, not just what is missing: the natural mistake is to `.load` the raw
+				// publish output (which is what `dotnet publish` prints), where no bridge/ exists.
+				return "bridge runtimeconfig not found next to extension: " + runtimeConfigPath
+					+ Environment.NewLine
+					+ "  This DLL needs a 'bridge' folder ALONGSIDE it. Load the deploy bundle instead"
+					+ " (deploy\\WinDbgAotExt.dll, or the CI 'WinDbgAotExt-bundle' artifact / release zip),"
+					+ " or copy the bridge build output next to this DLL. See README 'What you load'.";
 
 			string hostfxrPath = FindHostFxr();
 			IntPtr hostfxrLibrary = NativeLibrary.Load(hostfxrPath);
@@ -118,13 +124,21 @@ internal static unsafe class ClrHost
 		return Path.GetDirectoryName(ownDllPath) ?? throw new InvalidOperationException("no directory for " + ownDllPath);
 	}
 
+	// Newest hostfxr wins -- ordered NUMERICALLY, not lexically. A plain string sort puts "9.0.4"
+	// AFTER "10.0.0" ('9' > '1'), so the old OrderBy(directory) picked the OLDEST runtime the moment
+	// a machine had both 9.x and 10.x installed -- and the bridge needs .NET 10. Unparseable names
+	// sort to the bottom rather than throwing.
 	private static string FindHostFxr()
 	{
 		string dotnetRoot = Environment.GetEnvironmentVariable("DOTNET_ROOT") ?? @"C:\Program Files\dotnet";
 		string frameworkResolverBase = Path.Combine(dotnetRoot, "host", "fxr");
 		string? hostfxrPath = Directory.Exists(frameworkResolverBase)
-			? Directory.GetDirectories(frameworkResolverBase).OrderBy(directory => directory)
-				.Select(directory => Path.Combine(directory, "hostfxr.dll")).LastOrDefault(File.Exists)
+			? Directory.GetDirectories(frameworkResolverBase)
+				.OrderBy(directory => Version.TryParse(Path.GetFileName(directory), out Version? version)
+					? version
+					: new Version(0, 0))
+				.Select(directory => Path.Combine(directory, "hostfxr.dll"))
+				.LastOrDefault(File.Exists)
 			: null;
 		return hostfxrPath ?? throw new FileNotFoundException("hostfxr.dll not found under " + frameworkResolverBase);
 	}
