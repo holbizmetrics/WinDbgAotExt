@@ -1,0 +1,76 @@
+# CI: build + test every push/PR on a Windows runner; assemble the ready-to-.load deploy bundle
+# as a downloadable artifact; publish a GitHub release when a v* tag is pushed (tag-gated).
+#
+# What CI covers (same three verification layers as the README, minus one):
+#   1. xUnit suite        - Argv parser, native Output path (mock COM vtables), WilTriage goldens,
+#                           LastEventInfo decoder offsets + typed-classify goldens.
+#   2. AOT publish        - the NativeAOT link (ilcompiler + VS C++ toolchain via vswhere).
+#   3. load-harness.ps1   - LoadLibrary the published DLL, resolve every export, dispatch commands
+#                           on the null-client path. Real native ABI, no debugger needed.
+# Honest boundary: the LIVE cdb layer (".load in a real dbgeng") is NOT run here - Store WinDbg is
+# not installed on GitHub runners. That proof stays a local step before tagging a release.
+#
+# Bundle provenance (kernel Pass omega): the release zip is built from the checked-out tag commit
+# inside this run - the artifact cannot predate a fix that is in the tag.
+
+name: CI
+
+on:
+  push:
+    branches: [master]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-test-bundle:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            9.0.x
+            10.0.x
+
+      - name: Unit tests (xUnit)
+        run: dotnet test WinDbgAotExt.Tests/WinDbgAotExt.Tests.csproj -c Release --nologo
+
+      - name: Publish AOT extension (native link)
+        shell: pwsh
+        run: |
+          # ilcompiler locates the MSVC linker through vswhere; make sure it is on PATH
+          $env:PATH += ";C:\Program Files (x86)\Microsoft Visual Studio\Installer"
+          dotnet publish WinDbgAotExt/WinDbgAotExt.csproj -c Release -r win-x64 --nologo
+
+      - name: Build bridge (net10 + Roslyn/ClrMD)
+        run: dotnet build bridge/WinDbgAotExt.Bridge.csproj -c Release --nologo
+
+      - name: Native ABI harness (LoadLibrary + export dispatch)
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tools/load-harness.ps1
+
+      - name: Assemble deploy bundle (WinDbgAotExt.dll + bridge/ alongside)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force bundle | Out-Null
+          Copy-Item WinDbgAotExt/bin/Release/net9.0-windows/win-x64/publish/WinDbgAotExt.dll bundle/
+          New-Item -ItemType Directory -Force bundle/bridge | Out-Null
+          Copy-Item bridge/bin/Release/net10.0/* bundle/bridge/ -Recurse
+          Get-ChildItem -Recurse bundle | Select-Object -ExpandProperty FullName
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: WinDbgAotExt-bundle
+          path: bundle
+
+      - name: Release (tag-gated)
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $zip = "WinDbgAotExt-${{ github.ref_name }}.zip"
+          Compress-Archive -Path bundle\* -DestinationPath $zip
+          gh release create "${{ github.ref_name }}" $zip --title "WinDbgAotExt ${{ github.ref_name }}" --generate-notes
