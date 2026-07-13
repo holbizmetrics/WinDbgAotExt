@@ -105,6 +105,10 @@ internal static unsafe class ClrHost
 	public static string SessionVars() =>
 		CallBridge("SessionVars", string.Empty, IntPtr.Zero);
 
+	// Filter the managed heap for strings (!strings [pattern]). Args text + client go to the bridge.
+	public static string Strings(string arguments, IntPtr debugClient) =>
+		CallBridge("StringsText", arguments, debugClient);
+
 	// One route to any (string, IntPtr) -> string entry point on the bridge. Both bridge methods are
 	// UNMANAGEDCALLERSONLY and return an HGlobal UTF-16 string that WE own and must free.
 	private static string CallBridge(string bridgeMethodName, string argumentText, IntPtr debugClient)

@@ -59,8 +59,8 @@ output through the live `IDebugControl::Output` path, and returns cleanly — no
 - Exports: `DebugExtensionInitialize` (reports the version declared in `CommandHost.EXT_VERSION_*`,
   today v1.3), `DebugExtensionUninitialize`, `DebugExtensionNotify`, plus commands `hello`, `echo`,
   `version`, `clrtest`, `cs`, `csreset` (clear the persistent `!cs` session), `csvars` (list the
-  session's variables), `fields` (inspect one managed object's fields by address), and `wiltriage`
-  (break triage — see the Roadmap section).
+  session's variables), `fields` (inspect one managed object's fields by address), `strings`
+  (filter the managed heap for strings), and `wiltriage` (break triage — see the Roadmap section).
 - Command dispatch through `CommandHost` with a UTF-8 arg parser; output via the `IDebugControl`
   vtable (`Output` is index **14**, not 8 — a real bug fixed in `0a4dcbc`, **confirmed live**).
 - **Three independent test layers, all green:**
@@ -146,6 +146,21 @@ cdb> !fields 0x19b3c445360
 Accepts `0x`-prefixed, bare, or WinDbg backtick-grouped addresses. Managed objects only (it reads
 the CLR heap via ClrMD); a native target says so. This is the ClrMD heap-object twin of the
 frame-local struct read on the Roadmap (the `wil::FailureInfo` decode).
+
+**`!strings [regex] [--all]` — dumps store their answers as strings.** Connection strings, URLs,
+file paths, the error message a `catch` block swallowed — all sitting on the managed heap. This walks
+it, filters to `System.String`, and (optionally) regex-matches the values:
+
+```
+cdb> !strings widget-99$
+1 managed string(s) matching /widget-99$/:
+  0x1a941847bb0  "widget-99"
+cdb> !strings ^https?://          # every URL on the heap
+```
+
+No argument lists every string. Output is capped (200 by default) and **the dropped count is always
+reported** — add `--all` to lift the cap, or narrow the pattern. An invalid regex is reported, not
+thrown. Managed heap only.
 
 Scripts reach the live target through a `debugger` object (the debug client, handed in per command):
 - `debugger.Exec("cmd")` — run a WinDbg command.

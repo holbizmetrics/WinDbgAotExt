@@ -26,6 +26,7 @@ public static unsafe class CommandHost
 		Register("csreset", CsResetHandler);   // drop the persistent !cs session state
 		Register("csvars", CsVarsHandler);     // list the persistent !cs session's variables
 		Register("fields", FieldsHandler);     // inspect one managed object's fields by name + value
+		Register("strings", StringsHandler);   // filter the managed heap for strings (optional regex)
 		Register("wiltriage", WiltriageHandler); // triage the current break: benign vs fault + culprit
 	}
 
@@ -140,6 +141,15 @@ public static unsafe class CommandHost
 		string addressText = (raw ?? string.Empty).Trim();
 		if (addressText.Length == 0) { DbgEng.DbgOutLine(ctrl, "usage: !fields <object-address>   (hex; get one from  !cs debugger.Heap.Objects.First().Address )"); return 0; }
 		DbgEng.DbgOutLine(ctrl, ClrHost.Fields(addressText, client));
+		return 0;
+	}
+
+	// !strings [regex] [--all] : the managed heap's strings, optionally regex-filtered. Dumps store their
+	// answers as strings (connection strings, URLs, the swallowed error message); this gets at them.
+	// Capped by default; --all lifts the cap. No arg = every string.
+	private static int StringsHandler(IntPtr client, IntPtr ctrl, IReadOnlyList<string> __, string raw)
+	{
+		DbgEng.DbgOutLine(ctrl, ClrHost.Strings(raw ?? string.Empty, client));
 		return 0;
 	}
 

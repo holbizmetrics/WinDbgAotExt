@@ -74,7 +74,7 @@ if($moduleHandle -eq [IntPtr]::Zero){ Write-Host "cannot continue - DLL failed t
 # They are RESOLVED but not CALLED here: invoking them boots CoreCLR, which needs the bridge/ folder
 # and is the live-cdb layer's job, not the native-ABI layer's.
 $exports = 'DebugExtensionInitialize','DebugExtensionUninitialize','DebugExtensionNotify',
-           'hello','echo','version','clrtest','cs','csreset','csvars','fields','wiltriage'
+           'hello','echo','version','clrtest','cs','csreset','csvars','fields','strings','wiltriage'
 $exportAddresses = @{}
 foreach($exportName in $exports){
   $exportAddress = [Loader]::GetProcAddress($moduleHandle, $exportName)

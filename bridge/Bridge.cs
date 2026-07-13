@@ -305,6 +305,37 @@ namespace WinDbgAotExt.Bridge
 			return fields;
 		}
 
+		// Walk the managed heap for System.String objects, optionally regex-filtered. Dumps are full of
+		// answers stored as strings — connection strings, URLs, paths, the message a catch block swallowed
+		// — and nobody can get at them comfortably. `cap` bounds the output; `totalMatched` (out) is the
+		// count BEFORE the cap so the caller can report the dropped tail. Same cross-ALC discipline as
+		// Heap/Fields: ClrMD stays here, only StringHit POCOs cross to the script.
+		public System.Collections.Generic.List<StringHit> Strings(
+			System.Text.RegularExpressions.Regex? pattern, int cap, out int totalMatched)
+		{
+			totalMatched = 0;
+			var hits = new System.Collections.Generic.List<StringHit>();
+			if (_debugClient == IntPtr.Zero) return hits;
+
+			using var dataTarget = Microsoft.Diagnostics.Runtime.DataTarget.CreateFromDbgEng(_debugClient);
+			if (dataTarget.ClrVersions.Length == 0) return hits;   // native target: no managed heap
+			using var clrRuntime = dataTarget.ClrVersions[0].CreateRuntime();
+
+			foreach (var clrObject in clrRuntime.Heap.EnumerateObjects())
+			{
+				if (clrObject.Type?.Name != "System.String") continue;
+				string? value;
+				try { value = clrObject.AsString(maxLength: 1024); }
+				catch { continue; }   // one unreadable string must not abort the sweep
+				if (value == null) continue;
+				if (pattern != null && !pattern.IsMatch(value)) continue;
+
+				totalMatched++;
+				if (hits.Count < cap) hits.Add(new StringHit { Address = clrObject.Address, Value = value });
+			}
+			return hits;
+		}
+
 		// Read one field's value by its element kind. Primitives print inline; strings are read out;
 		// object references show "<Type> @ 0x..." and hand back the address (ObjectAddress) to drill into;
 		// structs are named but not expanded (a nested-struct read is a later slice).
@@ -479,6 +510,33 @@ namespace WinDbgAotExt.Bridge
 				builder.AppendLine($"  {variable.Type.Name} {variable.Name} = {renderedValue}");
 			}
 			return Marshal.StringToHGlobalUni(builder.ToString().TrimEnd());
+		}
+
+		// !strings [pattern] entry point: walk the heap for managed strings (optionally regex-filtered),
+		// return a capped, formatted listing. A trailing " --all" token lifts the cap. Separate from Eval
+		// so it never touches the persistent !cs session.
+		[UnmanagedCallersOnly]
+		public static IntPtr StringsText(IntPtr argsUtf16, IntPtr debugClient)
+		{
+			string arguments = (Marshal.PtrToStringUni(argsUtf16) ?? "").Trim();
+			int cap = StringRendering.DefaultCap;
+			if (arguments.EndsWith("--all", StringComparison.OrdinalIgnoreCase))
+			{
+				cap = int.MaxValue;
+				arguments = arguments.Substring(0, arguments.Length - "--all".Length).Trim();
+			}
+			string? pattern = arguments.Length == 0 ? null : arguments;
+			if (!StringRendering.TryCompilePattern(pattern, out var regex, out string? patternError))
+				return Marshal.StringToHGlobalUni(patternError);
+			try
+			{
+				var hits = new Debugger(debugClient).Strings(regex, cap, out int totalMatched);
+				return Marshal.StringToHGlobalUni(StringRendering.Format(hits, totalMatched, cap, pattern));
+			}
+			catch (Exception exception)
+			{
+				return Marshal.StringToHGlobalUni("!strings ERROR " + exception.GetType().Name + ": " + exception.Message);
+			}
 		}
 
 		// !fields entry point: parse the address text, read the object's fields via ClrMD, return a

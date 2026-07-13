@@ -57,6 +57,10 @@ public static unsafe class Exports
 	[UnmanagedCallersOnly(EntryPoint = "fields")]
 	public static int Fields(IntPtr client, byte* args) => CommandHost.Run("fields", client, args);
 
+	// Filter the managed heap for strings (optional regex)
+	[UnmanagedCallersOnly(EntryPoint = "strings")]
+	public static int Strings(IntPtr client, byte* args) => CommandHost.Run("strings", client, args);
+
 	// Triage the current break (benign deliberate break vs real fault + culprit module)
 	[UnmanagedCallersOnly(EntryPoint = "wiltriage")]
 	public static int Wiltriage(IntPtr client, byte* args) => CommandHost.Run("wiltriage", client, args);

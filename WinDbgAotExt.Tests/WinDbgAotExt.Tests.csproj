@@ -35,6 +35,9 @@
     <!-- The pure half of !fields: address parsing + listing formatting. The ClrMD read (Debugger.Fields)
          stays in Bridge.cs and is proven in cdb; these seams are locked here. -->
     <Compile Include="..\bridge\FieldInfo.cs" Link="FieldInfo.cs" />
+    <!-- The pure half of !strings: regex compile + listing formatter. The ClrMD walk (Debugger.Strings)
+         stays in Bridge.cs and is proven in cdb. -->
+    <Compile Include="..\bridge\StringHit.cs" Link="StringHit.cs" />
   </ItemGroup>
 
 </Project>
