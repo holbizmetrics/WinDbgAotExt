@@ -1,0 +1,155 @@
+# Release pipeline. Trigger: push a tag `v*` (e.g. `git tag v1.3.0 && git push origin v1.3.0`),
+# or run manually from the Actions tab (workflow_dispatch) with a version.
+#
+# What it guarantees, and why each step exists:
+#   * The zip is BUILT FROM THE TAGGED COMMIT inside this run -- never uploaded from a workstation.
+#     A published artifact that predates a fix, while the branch looks clean and every check is
+#     green, is a real failure this project's discipline has been bitten by before: the audit is
+#     only worth what the SHIPPED THING contains.
+#   * Nothing is published unless the full verification stack passes FIRST (tests -> AOT link ->
+#     native ABI harness). A red check cannot become a green release.
+#   * The version in the tag must match what the DLL reports (EXT_VERSION_*), so `!version` in a
+#     debugger never disagrees with the release the user downloaded.
+#   * The zip carries a README-INSTALL.txt: the bundle is downloaded standalone, so the .NET 10
+#     prerequisite and the "bridge/ must sit next to the DLL" rule must travel WITH it. Without
+#     that, the first !wiltriage fails with a boot error and the consumer has no context.
+#
+# Honest boundary: the LIVE `.load` proof against real dbgeng is NOT run here (no WinDbg on GitHub
+# runners). It stays a local pre-tag step -- run `cdb -cf tools\wiltriage.cdb cmd.exe` against the
+# bundle before tagging. This workflow proves the artifact builds, tests, and loads at the native
+# ABI level; it does not prove it triaged a real break.
+
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release (e.g. v1.3.0) — must match an existing tag'
+        required: true
+
+permissions:
+  contents: write   # gh release create (repo default token is read-only)
+
+jobs:
+  release:
+    runs-on: windows-2025   # pinned: NativeAOT links against the image's MSVC toolchain
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.version || github.ref }}
+          fetch-depth: 0   # tags + history, for release notes
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            9.0.x
+            10.0.x
+
+      - name: Resolve version + provenance
+        id: version
+        shell: pwsh
+        run: |
+          $version = if ('${{ github.event.inputs.version }}') { '${{ github.event.inputs.version }}' } else { '${{ github.ref_name }}' }
+          $commit = git rev-parse HEAD
+          "version=$version"  >> $env:GITHUB_OUTPUT
+          "commit=$commit"    >> $env:GITHUB_OUTPUT
+          Write-Host "Releasing $version from commit $commit"
+
+      - name: Gate — tag version must match the version the DLL reports
+        shell: pwsh
+        run: |
+          # `!version` in the debugger must never disagree with the release the user downloaded.
+          $source = Get-Content WinDbgAotExt/CommandHost.cs -Raw
+          $major = [regex]::Match($source, 'EXT_VERSION_MAJOR\s*=\s*(\d+)').Groups[1].Value
+          $minor = [regex]::Match($source, 'EXT_VERSION_MINOR\s*=\s*(\d+)').Groups[1].Value
+          $declared = "$major.$minor"
+          $tagVersion = '${{ steps.version.outputs.version }}' -replace '^v',''
+          if (-not $tagVersion.StartsWith($declared)) {
+            throw "Version mismatch: tag says '$tagVersion' but the extension reports '$declared' (CommandHost.EXT_VERSION_*). Bump one of them."
+          }
+          Write-Host "OK: tag $tagVersion matches extension version $declared"
+
+      - name: Verify — unit tests
+        run: dotnet test WinDbgAotExt.Tests/WinDbgAotExt.Tests.csproj -c Release --nologo
+
+      - name: Build — AOT extension (native link)
+        shell: pwsh
+        run: |
+          $env:PATH += ";C:\Program Files (x86)\Microsoft Visual Studio\Installer"   # vswhere, for the MSVC link
+          dotnet publish WinDbgAotExt/WinDbgAotExt.csproj -c Release -r win-x64 --nologo
+
+      - name: Build — bridge (net10 + Roslyn/ClrMD)
+        run: dotnet build bridge/WinDbgAotExt.Bridge.csproj -c Release --nologo
+
+      - name: Verify — native ABI harness against the freshly built DLL
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tools/load-harness.ps1
+
+      - name: Assemble the shipped bundle
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force bundle/bridge | Out-Null
+          Copy-Item WinDbgAotExt/bin/Release/net9.0-windows/win-x64/publish/WinDbgAotExt.dll bundle/
+          Copy-Item bridge/bin/Release/net10.0/* bundle/bridge/ -Recurse
+
+          # The bundle travels alone -- its prerequisites must travel with it.
+          @"
+          WinDbgAotExt ${{ steps.version.outputs.version }}
+          Built from commit ${{ steps.version.outputs.commit }}
+
+          WHAT THIS IS
+            A C# NativeAOT WinDbg extension: live C# + LINQ against a live target or a dump,
+            plus !wiltriage (break triage: deliberate int3 vs real fault + culprit module).
+
+          PREREQUISITE
+            The .NET 10 runtime. Check with:  dotnet --list-runtimes
+            (look for Microsoft.NETCore.App 10.0.x). The extension boots this runtime in-process;
+            without it the first !cs / !wiltriage reports a CLR boot failure.
+
+          LAYOUT -- do not separate these
+            WinDbgAotExt.dll      <- load THIS
+            bridge\               <- must stay in the SAME folder as the DLL
+
+          USE (WinDbgX command window, or cdb)
+            .load C:\path\to\WinDbgAotExt.dll
+            !wiltriage                                  triage the current break
+            !cs 1 + 2                                   live C#
+            !cs debugger.Modules.OrderByDescending(m => m.Size).First().Name
+            !cs debugger.Heap.Objects.GroupBy(o => o.TypeName)
+                  .OrderByDescending(g => g.Sum(o => (long)o.Size)).First().Key    (managed targets)
+          The first !cs or !wiltriage boots CoreCLR: a one-time ~1-2 s pause per session.
+
+          Source, docs, issues: https://github.com/holbizmetrics/WinDbgAotExt
+          "@ | Set-Content bundle/README-INSTALL.txt -Encoding utf8
+
+          Compress-Archive -Path bundle\* -DestinationPath "WinDbgAotExt-${{ steps.version.outputs.version }}.zip"
+          Get-ChildItem -Recurse bundle | Select-Object -ExpandProperty FullName
+
+      - name: Publish the GitHub release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $version = '${{ steps.version.outputs.version }}'
+          $notes = @"
+          Built by the release pipeline from commit ``${{ steps.version.outputs.commit }}`` — the zip
+          below is compiled from that exact commit in this run, not uploaded from a workstation.
+
+          **Download** ``WinDbgAotExt-$version.zip``, unzip, and ``.load`` the ``WinDbgAotExt.dll`` inside
+          (keep the ``bridge\`` folder beside it). Requires the **.NET 10 runtime**. See
+          ``README-INSTALL.txt`` in the zip.
+
+          Verified in this run: unit tests, NativeAOT native link, native ABI load-harness (LoadLibrary
+          + every export resolved + command dispatch). The live ``.load``-into-real-dbgeng proof is run
+          locally before tagging — GitHub runners have no WinDbg.
+          "@
+          gh release create $version "WinDbgAotExt-$version.zip" --title "WinDbgAotExt $version" --notes $notes
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: WinDbgAotExt-${{ steps.version.outputs.version }}
+          path: bundle
+          retention-days: 90

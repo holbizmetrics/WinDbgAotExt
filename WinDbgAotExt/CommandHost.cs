@@ -10,8 +10,11 @@ public static unsafe class CommandHost
 
 	private static readonly Dictionary<string, CommandHandler> _map = new(StringComparer.OrdinalIgnoreCase);
 
+	// Reported by !version and by DebugExtensionInitialize (as 0x00010003). The release pipeline
+	// GATES on this matching the tag, so `!version` in a debugger can never disagree with the
+	// release the user downloaded.
 	public const uint EXT_VERSION_MAJOR = 1;
-	public const uint EXT_VERSION_MINOR = 1;
+	public const uint EXT_VERSION_MINOR = 3;
 
 	static CommandHost()
 	{

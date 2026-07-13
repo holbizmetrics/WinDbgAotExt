@@ -17,13 +17,12 @@ name: CI
 
 on:
   push:
-    branches: [master]
-    tags: ['v*']
+    branches: [master]   # tags are release.yml's trigger, not CI's -- no double-build, no release race
   pull_request:
   workflow_dispatch:
 
 permissions:
-  contents: write   # gh release create; the repo default token is read-only (verified) -> 403 without this
+  contents: read   # CI only builds + tests; publishing rights live in release.yml alone
 
 jobs:
   build-test-bundle:
@@ -71,12 +70,6 @@ jobs:
           path: bundle
           retention-days: 30
 
-      - name: Release (tag-gated)
-        if: startsWith(github.ref, 'refs/tags/v')
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          $zip = "WinDbgAotExt-${{ github.ref_name }}.zip"
-          Compress-Archive -Path bundle\* -DestinationPath $zip
-          gh release create "${{ github.ref_name }}" $zip --title "WinDbgAotExt ${{ github.ref_name }}" --generate-notes
+      # Releases are NOT cut here -- that is release.yml's job (tag-triggered), which additionally
+      # gates on the tag-vs-DLL version match and ships README-INSTALL.txt with the bundle. Two
+      # workflows racing to `gh release create` on the same tag would collide.

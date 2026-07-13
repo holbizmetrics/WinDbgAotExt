@@ -56,7 +56,7 @@ So the design is two layers:
 **Layer 1 — complete.** The extension loads into a real debugger, dispatches commands, prints
 output through the live `IDebugControl::Output` path, and returns cleanly — no crash.
 
-- Exports: `DebugExtensionInitialize` (reports v1.1), `DebugExtensionUninitialize`,
+- Exports: `DebugExtensionInitialize` (reports the version declared in `CommandHost.EXT_VERSION_*`, today v1.3), `DebugExtensionUninitialize`,
   `DebugExtensionNotify`, plus commands `hello`, `echo`, `version`, `clrtest`, `cs`, and
   `wiltriage` (break triage — see the Roadmap section).
 - Command dispatch through `CommandHost` with a UTF-8 arg parser; output via the `IDebugControl`
@@ -69,7 +69,7 @@ output through the live `IDebugControl::Output` path, and returns cleanly — no
     command emits through `enter → QueryInterface → dispatch → Output → return`. No WinDbg needed.
   - `tools/load-harness.ps1` — native ABI proof *without WinDbg*, **14/14**: LoadLibrary the AOT
     DLL, resolve every export, call `DebugExtensionInitialize` (assert `S_OK` + version
-    `0x00010001`), dispatch the commands on the null-client path.
+    matching the source-declared version), resolve ALL 9 exports, dispatch the commands on the null-client path.
   - **Live `.load` in cdb** — the definitive test against real dbgeng:
     ```
     cdb -c ".load WinDbgAotExt.dll; !hello world; !version; q" cmd.exe

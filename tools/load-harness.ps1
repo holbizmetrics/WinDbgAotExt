@@ -10,7 +10,7 @@
 
     1. LoadLibrary the AOT DLL
     2. Resolve every expected export (DebugExtensionInitialize/Uninitialize/Notify + commands)
-    3. Call DebugExtensionInitialize -> assert S_OK (0) AND *version == 0x00010001 (v1.1)
+    3. Call DebugExtensionInitialize -> assert S_OK (0) AND *version == the version the source declares
     4. Call each command with a NULL debug client -> asserts the null-guard path returns S_OK
        (CommandHost skips QueryInterface on a null client; DbgOutLine no-ops on IntPtr.Zero)
     5. Negative control: a bogus export name must NOT resolve
@@ -86,12 +86,20 @@ foreach($exportName in $exports){
 $bogus = [Loader]::GetProcAddress($moduleHandle, 'this_export_does_not_exist')
 Check "negative-control" ($bogus -eq [IntPtr]::Zero) "bogus name correctly did not resolve"
 
-# 3. DebugExtensionInitialize -> S_OK + version 0x00010001 (major<<16 | minor = 1.1)
+# 3. DebugExtensionInitialize -> S_OK + the version the SOURCE declares (major<<16 | minor).
+#    Derived from CommandHost.EXT_VERSION_*, never hardcoded: a hardcoded 0x00010001 turns every
+#    version bump into a red harness for no reason, and the check we actually want is
+#    "the built DLL reports what the source says" -- which is also what the release pipeline gates on.
+$commandHostSource = Get-Content "$PSScriptRoot\..\WinDbgAotExt\CommandHost.cs" -Raw
+$declaredMajor = [uint32][regex]::Match($commandHostSource, 'EXT_VERSION_MAJOR\s*=\s*(\d+)').Groups[1].Value
+$declaredMinor = [uint32][regex]::Match($commandHostSource, 'EXT_VERSION_MINOR\s*=\s*(\d+)').Groups[1].Value
+$expectedVersion = ($declaredMajor -shl 16) -bor $declaredMinor
 if($exportAddresses['DebugExtensionInitialize'] -ne [IntPtr]::Zero){
   $extensionVersion = 0; $flags = 0
   $hresult = [Loader]::CallInit($exportAddresses['DebugExtensionInitialize'], [ref]$extensionVersion, [ref]$flags)
   Check "Init returns S_OK" ($hresult -eq 0) ("hresult=0x{0:X8}" -f $hresult)
-  Check "Init version 0x00010001" ($extensionVersion -eq 0x00010001) ("version=0x{0:X8} (expected 0x00010001 = v1.1)" -f $extensionVersion)
+  Check ("Init version 0x{0:X8} (source says v{1}.{2})" -f $expectedVersion, $declaredMajor, $declaredMinor) `
+        ($extensionVersion -eq $expectedVersion) ("version=0x{0:X8}" -f $extensionVersion)
   Check "Init flags 0" ($flags -eq 0) ("flags=0x{0:X8}" -f $flags)
 }
 
