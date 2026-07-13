@@ -27,6 +27,7 @@ public static unsafe class CommandHost
 		Register("csvars", CsVarsHandler);     // list the persistent !cs session's variables
 		Register("fields", FieldsHandler);     // inspect one managed object's fields by name + value
 		Register("strings", StringsHandler);   // filter the managed heap for strings (optional regex)
+		Register("report", ReportHandler);     // write the standard triage battery to one markdown file
 		Register("wiltriage", WiltriageHandler); // triage the current break: benign vs fault + culprit
 	}
 
@@ -150,6 +151,15 @@ public static unsafe class CommandHost
 	private static int StringsHandler(IntPtr client, IntPtr ctrl, IReadOnlyList<string> __, string raw)
 	{
 		DbgEng.DbgOutLine(ctrl, ClrHost.Strings(raw ?? string.Empty, client));
+		return 0;
+	}
+
+	// !report [path] : run the standard triage battery (target, last event, wiltriage, modules, threads,
+	// managed-heap rollup) and write one markdown file a non-WinDbg-expert -- or an AI -- can consume.
+	// Default path is %TEMP%\windbg-triage-report.md; an argument overrides it.
+	private static int ReportHandler(IntPtr client, IntPtr ctrl, IReadOnlyList<string> __, string raw)
+	{
+		DbgEng.DbgOutLine(ctrl, ClrHost.WriteReport((raw ?? string.Empty).Trim(), client));
 		return 0;
 	}
 

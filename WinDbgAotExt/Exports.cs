@@ -61,6 +61,10 @@ public static unsafe class Exports
 	[UnmanagedCallersOnly(EntryPoint = "strings")]
 	public static int Strings(IntPtr client, byte* args) => CommandHost.Run("strings", client, args);
 
+	// Write the standard triage battery to one markdown file
+	[UnmanagedCallersOnly(EntryPoint = "report")]
+	public static int Report(IntPtr client, byte* args) => CommandHost.Run("report", client, args);
+
 	// Triage the current break (benign deliberate break vs real fault + culprit module)
 	[UnmanagedCallersOnly(EntryPoint = "wiltriage")]
 	public static int Wiltriage(IntPtr client, byte* args) => CommandHost.Run("wiltriage", client, args);

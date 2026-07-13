@@ -512,6 +512,103 @@ namespace WinDbgAotExt.Bridge
 			return Marshal.StringToHGlobalUni(builder.ToString().TrimEnd());
 		}
 
+		// !report [path] entry point: run the standard triage battery and write ONE markdown file a
+		// junior engineer or an AI can consume -- the force-multiplier for "developers rarely have WinDbg
+		// experience." Exploits that the hosted CoreCLR has the full BCL (real File I/O), which the JS
+		// provider does not. Default path is %TEMP%\windbg-triage-report.md; an argument overrides it.
+		[UnmanagedCallersOnly]
+		public static IntPtr WriteReport(IntPtr pathUtf16, IntPtr debugClient)
+		{
+			if (debugClient == IntPtr.Zero) return Marshal.StringToHGlobalUni("!report: no debug client");
+			try
+			{
+				var data = GatherReport(new Debugger(debugClient));
+				string markdown = ReportRendering.Build(data);
+
+				string requestedPath = (Marshal.PtrToStringUni(pathUtf16) ?? "").Trim();
+				string reportPath = requestedPath.Length > 0
+					? requestedPath
+					: System.IO.Path.Combine(System.IO.Path.GetTempPath(), "windbg-triage-report.md");
+				System.IO.File.WriteAllText(reportPath, markdown);
+
+				string heapNote = !data.ClrPresent ? "native (no managed heap)" : $"{data.TopHeapTypes?.Count ?? 0} heap types";
+				return Marshal.StringToHGlobalUni(
+					$"triage report written: {reportPath}\n" +
+					$"  {markdown.Length:N0} chars — {data.ModuleCount} modules, {data.ThreadCount} threads, {heapNote}");
+			}
+			catch (Exception exception)
+			{
+				return Marshal.StringToHGlobalUni("!report ERROR " + exception.GetType().Name + ": " + exception.Message);
+			}
+		}
+
+		private static ReportData GatherReport(Debugger debugger)
+		{
+			// Target kind from the typed dump check (null = couldn't tell).
+			bool? isDump = debugger.IsDumpTarget;
+			string targetKind = isDump == true ? "crash dump" : isDump == false ? "live process" : "unknown";
+
+			// Triage: same shape as !wiltriage -- prefer the stored exception context on a dump.
+			string ecxr = debugger.Run(".ecxr");
+			bool stackFromException = ecxr.Contains("rip=") || ecxr.Contains("eip=");
+			string stack = debugger.Run("k");
+			var lastEvent = debugger.LastEvent;
+			string triageVerdict = lastEvent != null
+				? WilTriage.Classify(lastEvent, stack, stackFromException)
+				: WilTriage.Classify(debugger.Run(".lastevent"), stack, stackFromException);
+
+			// Modules: full list, top 15 by size.
+			var modules = debugger.Modules;
+			var topModules = modules
+				.OrderByDescending(module => module.Size)
+				.Take(15)
+				.Select(module => new ReportModule { Name = module.Name, Size = module.Size, Base = module.Start })
+				.ToList();
+
+			// Threads: count from `~` (one line per thread); typed threads are a later slice.
+			string threadsRaw = debugger.Run("~");
+			int threadCount = threadsRaw
+				.Split('\n')
+				.Count(line => line.Trim().Length > 0);
+
+			// Managed heap rollup (only meaningful on a .NET target). One walk; ClrPresent is set by it.
+			var heap = debugger.Heap;
+			var heapObjects = heap.Objects;   // materializes the walk + sets ClrPresent
+			List<ReportHeapType>? topHeapTypes = null;
+			if (heap.ClrPresent)
+			{
+				topHeapTypes = heapObjects
+					.GroupBy(o => o.TypeName)
+					.Select(group => new ReportHeapType
+					{
+						TypeName = group.Key,
+						Count = group.Count(),
+						Bytes = group.Sum(o => (long)o.Size),
+					})
+					.OrderByDescending(type => type.Bytes)
+					.Take(15)
+					.ToList();
+			}
+
+			return new ReportData
+			{
+				Generated = FormatNow(),
+				TargetKind = targetKind,
+				VerTarget = debugger.Run("vertarget"),
+				LastEventLine = lastEvent?.ToString() ?? debugger.Run(".lastevent").Trim(),
+				TriageVerdict = triageVerdict,
+				ModuleCount = modules.Count,
+				TopModules = topModules,
+				ThreadCount = threadCount,
+				ClrPresent = heap.ClrPresent,
+				TopHeapTypes = topHeapTypes,
+			};
+		}
+
+		// The hosted CoreCLR is a full runtime, so DateTime is real here (unlike a restricted sandbox).
+		private static string FormatNow() =>
+			DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss", System.Globalization.CultureInfo.InvariantCulture);
+
 		// !strings [pattern] entry point: walk the heap for managed strings (optionally regex-filtered),
 		// return a capped, formatted listing. A trailing " --all" token lifts the cap. Separate from Eval
 		// so it never touches the persistent !cs session.

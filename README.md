@@ -60,7 +60,8 @@ output through the live `IDebugControl::Output` path, and returns cleanly — no
   today v1.3), `DebugExtensionUninitialize`, `DebugExtensionNotify`, plus commands `hello`, `echo`,
   `version`, `clrtest`, `cs`, `csreset` (clear the persistent `!cs` session), `csvars` (list the
   session's variables), `fields` (inspect one managed object's fields by address), `strings`
-  (filter the managed heap for strings), and `wiltriage` (break triage — see the Roadmap section).
+  (filter the managed heap for strings), `report` (write the triage battery to a markdown file), and
+  `wiltriage` (break triage — see the Roadmap section).
 - Command dispatch through `CommandHost` with a UTF-8 arg parser; output via the `IDebugControl`
   vtable (`Output` is index **14**, not 8 — a real bug fixed in `0a4dcbc`, **confirmed live**).
 - **Three independent test layers, all green:**
@@ -161,6 +162,22 @@ cdb> !strings ^https?://          # every URL on the heap
 No argument lists every string. Output is capped (200 by default) and **the dropped count is always
 reported** — add `--all` to lift the cap, or narrow the pattern. An invalid regex is reported, not
 thrown. Managed heap only.
+
+**`!report [path]` — the whole triage battery in one markdown file.** Most developers who hit a crash
+dump don't know WinDbg. `!report` runs the standard first-pass — target kind, last event, `!wiltriage`
+verdict, the module table, thread count, and (on a managed target) the top heap types by total bytes —
+and writes **one markdown file a junior engineer or an AI can read** without ever touching a debugger.
+It exploits that the hosted CoreCLR has the full BCL: real `System.IO` file writing, which WinDbg's JS
+provider effectively lacks.
+
+```
+cdb> !report
+triage report written: C:\Users\you\AppData\Local\Temp\windbg-triage-report.md
+  2,460 chars — 38 modules, 7 threads, 15 heap types
+```
+
+Default path is `%TEMP%\windbg-triage-report.md`; pass a path to override. Numbers are formatted
+locale-independently so a report reads the same on any machine (and parses predictably downstream).
 
 Scripts reach the live target through a `debugger` object (the debug client, handed in per command):
 - `debugger.Exec("cmd")` — run a WinDbg command.

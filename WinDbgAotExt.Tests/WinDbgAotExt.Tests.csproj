@@ -38,6 +38,9 @@
     <!-- The pure half of !strings: regex compile + listing formatter. The ClrMD walk (Debugger.Strings)
          stays in Bridge.cs and is proven in cdb. -->
     <Compile Include="..\bridge\StringHit.cs" Link="StringHit.cs" />
+    <!-- The pure half of !report: markdown assembly. The live gathering (Bridge.WriteReport) stays in
+         Bridge.cs and is proven in cdb. -->
+    <Compile Include="..\bridge\ReportData.cs" Link="ReportData.cs" />
   </ItemGroup>
 
 </Project>
