@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -261,6 +262,118 @@ namespace WinDbgAotExt.Bridge
 		// (defined in this assembly, which Eval already references), so ClrMD never has to load in
 		// Roslyn's script load-context — sidestepping the Layer-2c cross-ALC type-identity trap.
 		public HeapView Heap => new HeapView(_debugClient);
+
+		// Inspect ONE managed object: its instance fields as typed FieldInfo POCOs (name / declared type /
+		// rendered value), so Heap stops being a census and becomes an inspector. The census finds the
+		// address (`debugger.Heap.Objects.Where(...).First().Address`); this reads what's inside it. Object
+		// -reference fields carry the referent's address in FieldInfo.ObjectAddress, so you drill in with
+		// another `!fields <addr>` -- one level per call, deliberately (no unbounded graph walk).
+		// Same cross-ALC discipline as Heap: all ClrMD stays here, only our POCOs cross to the script.
+		public System.Collections.Generic.List<FieldInfo> Fields(ulong address)
+		{
+			var fields = new System.Collections.Generic.List<FieldInfo>();
+			if (_debugClient == IntPtr.Zero) return fields;
+
+			using var dataTarget = Microsoft.Diagnostics.Runtime.DataTarget.CreateFromDbgEng(_debugClient);
+			if (dataTarget.ClrVersions.Length == 0)
+			{
+				fields.Add(FieldInfo.Note("no managed runtime in this target (native process or dump)"));
+				return fields;
+			}
+			using var clrRuntime = dataTarget.ClrVersions[0].CreateRuntime();
+			var clrObject = clrRuntime.Heap.GetObject(address);
+			if (!clrObject.IsValid || clrObject.Type == null)
+			{
+				fields.Add(FieldInfo.Note($"0x{address:x} is not a valid managed object on this heap"));
+				return fields;
+			}
+
+			foreach (var field in clrObject.Type.Fields)
+			{
+				string fieldName = field.Name ?? "<unnamed>";
+				string declaredType = field.Type?.Name ?? "<unknown>";
+				try
+				{
+					RenderField(clrObject, field, fieldName, declaredType, fields);
+				}
+				catch (Exception exception)
+				{
+					// One unreadable field (bad memory, unexpected layout) must not abort the whole listing.
+					fields.Add(new FieldInfo { Name = fieldName, TypeName = declaredType, Value = "<unreadable: " + exception.GetType().Name + ">" });
+				}
+			}
+			return fields;
+		}
+
+		// Read one field's value by its element kind. Primitives print inline; strings are read out;
+		// object references show "<Type> @ 0x..." and hand back the address (ObjectAddress) to drill into;
+		// structs are named but not expanded (a nested-struct read is a later slice).
+		private static void RenderField(
+			Microsoft.Diagnostics.Runtime.ClrObject clrObject,
+			Microsoft.Diagnostics.Runtime.ClrInstanceField field,
+			string fieldName, string declaredType,
+			System.Collections.Generic.List<FieldInfo> sink)
+		{
+			switch (field.ElementType)
+			{
+				case Microsoft.Diagnostics.Runtime.ClrElementType.String:
+					string? stringValue = clrObject.ReadStringField(fieldName);
+					sink.Add(new FieldInfo { Name = fieldName, TypeName = declaredType, Value = stringValue == null ? "null" : "\"" + stringValue + "\"" });
+					break;
+
+				case Microsoft.Diagnostics.Runtime.ClrElementType.Class:
+				case Microsoft.Diagnostics.Runtime.ClrElementType.Object:
+				case Microsoft.Diagnostics.Runtime.ClrElementType.Array:
+				case Microsoft.Diagnostics.Runtime.ClrElementType.SZArray:
+					var referent = clrObject.ReadObjectField(fieldName);
+					if (referent.IsNull)
+						sink.Add(new FieldInfo { Name = fieldName, TypeName = declaredType, Value = "null" });
+					else
+						sink.Add(new FieldInfo
+						{
+							Name = fieldName,
+							TypeName = declaredType,
+							Value = $"{referent.Type?.Name ?? declaredType} @ 0x{referent.Address:x}",
+							ObjectAddress = referent.Address,   // drill in: !fields 0x...
+						});
+					break;
+
+				case Microsoft.Diagnostics.Runtime.ClrElementType.Struct:
+					sink.Add(new FieldInfo { Name = fieldName, TypeName = declaredType, Value = "(struct — not expanded)" });
+					break;
+
+				default:
+					// Everything primitive (Boolean/Char/Int*/UInt*/Float/Double/NativeInt/Pointer).
+					sink.Add(new FieldInfo { Name = fieldName, TypeName = declaredType, Value = ReadPrimitive(clrObject, field, fieldName) });
+					break;
+			}
+		}
+
+		private static string ReadPrimitive(
+			Microsoft.Diagnostics.Runtime.ClrObject clrObject,
+			Microsoft.Diagnostics.Runtime.ClrInstanceField field,
+			string fieldName)
+		{
+			switch (field.ElementType)
+			{
+				case Microsoft.Diagnostics.Runtime.ClrElementType.Boolean: return clrObject.ReadField<bool>(fieldName).ToString();
+				case Microsoft.Diagnostics.Runtime.ClrElementType.Char:    return "'" + clrObject.ReadField<char>(fieldName) + "'";
+				case Microsoft.Diagnostics.Runtime.ClrElementType.Int8:    return clrObject.ReadField<sbyte>(fieldName).ToString();
+				case Microsoft.Diagnostics.Runtime.ClrElementType.UInt8:   return clrObject.ReadField<byte>(fieldName).ToString();
+				case Microsoft.Diagnostics.Runtime.ClrElementType.Int16:   return clrObject.ReadField<short>(fieldName).ToString();
+				case Microsoft.Diagnostics.Runtime.ClrElementType.UInt16:  return clrObject.ReadField<ushort>(fieldName).ToString();
+				case Microsoft.Diagnostics.Runtime.ClrElementType.Int32:   return clrObject.ReadField<int>(fieldName).ToString();
+				case Microsoft.Diagnostics.Runtime.ClrElementType.UInt32:  return clrObject.ReadField<uint>(fieldName).ToString();
+				case Microsoft.Diagnostics.Runtime.ClrElementType.Int64:   return clrObject.ReadField<long>(fieldName).ToString();
+				case Microsoft.Diagnostics.Runtime.ClrElementType.UInt64:  return clrObject.ReadField<ulong>(fieldName).ToString();
+				case Microsoft.Diagnostics.Runtime.ClrElementType.Float:   return clrObject.ReadField<float>(fieldName).ToString();
+				case Microsoft.Diagnostics.Runtime.ClrElementType.Double:  return clrObject.ReadField<double>(fieldName).ToString();
+				case Microsoft.Diagnostics.Runtime.ClrElementType.NativeInt:  return "0x" + clrObject.ReadField<long>(fieldName).ToString("x");
+				case Microsoft.Diagnostics.Runtime.ClrElementType.NativeUInt: return "0x" + clrObject.ReadField<ulong>(fieldName).ToString("x");
+				case Microsoft.Diagnostics.Runtime.ClrElementType.Pointer:    return "0x" + clrObject.ReadField<ulong>(fieldName).ToString("x");
+				default: return "(" + field.ElementType + ")";
+			}
+		}
 	}
 
 	// A view over the debuggee's managed GC heap. `.Objects` materializes the walk into plain POCOs so
@@ -347,6 +460,44 @@ namespace WinDbgAotExt.Bridge
 			return Marshal.StringToHGlobalUni(hadState
 				? "!cs session reset -- all script variables dropped."
 				: "!cs session was already empty.");
+		}
+
+		// !csvars: list the variables the operator has declared in the persistent !cs session, with
+		// type + value. The internal `debugger` binding is hidden -- it's plumbing, not the user's data.
+		[UnmanagedCallersOnly]
+		public static IntPtr SessionVars(IntPtr unused, IntPtr alsoUnused)
+		{
+			if (_scriptState == null) return Marshal.StringToHGlobalUni("(no !cs session yet -- run a !cs command first)");
+			var userVariables = _scriptState.Variables.Where(variable => variable.Name != "debugger").ToList();
+			if (userVariables.Count == 0) return Marshal.StringToHGlobalUni("(no !cs session variables)");
+			var builder = new StringBuilder();
+			foreach (var variable in userVariables)
+			{
+				string renderedValue;
+				try { renderedValue = variable.Value?.ToString() ?? "null"; }
+				catch (Exception exception) { renderedValue = "<ToString threw: " + exception.GetType().Name + ">"; }
+				builder.AppendLine($"  {variable.Type.Name} {variable.Name} = {renderedValue}");
+			}
+			return Marshal.StringToHGlobalUni(builder.ToString().TrimEnd());
+		}
+
+		// !fields entry point: parse the address text, read the object's fields via ClrMD, return a
+		// formatted listing. Separate from Eval so it never touches the persistent !cs session.
+		[UnmanagedCallersOnly]
+		public static IntPtr FieldsText(IntPtr addressUtf16, IntPtr debugClient)
+		{
+			string addressText = Marshal.PtrToStringUni(addressUtf16) ?? "";
+			if (!FieldRendering.TryParseAddress(addressText, out ulong address))
+				return Marshal.StringToHGlobalUni($"!fields: '{addressText}' is not a hex address");
+			try
+			{
+				var fields = new Debugger(debugClient).Fields(address);
+				return Marshal.StringToHGlobalUni(FieldRendering.FormatFields(address, fields));
+			}
+			catch (Exception exception)
+			{
+				return Marshal.StringToHGlobalUni("!fields ERROR " + exception.GetType().Name + ": " + exception.Message);
+			}
 		}
 
 		// Run one submission, returning null + the exception instead of throwing. Each call's exception is
@@ -436,7 +587,11 @@ namespace WinDbgAotExt.Bridge
 				if (nextState == null)
 				{
 					// Report the ORIGINAL error, not the retry's: the operator wrote the first version.
-					resultText = "ERROR " + firstError!.GetType().Name + ": " + firstError.Message;
+					// A compile error lists ALL diagnostics (the default message shows only the first),
+					// so a submission with several mistakes surfaces them together.
+					resultText = firstError is CompilationErrorException compileError
+						? "COMPILE ERROR:\n" + string.Join("\n", compileError.Diagnostics.Select(diagnostic => diagnostic.ToString()))
+						: "ERROR " + firstError!.GetType().Name + ": " + firstError.Message;
 					return Marshal.StringToHGlobalUni(resultText);
 				}
 

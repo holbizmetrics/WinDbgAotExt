@@ -96,6 +96,15 @@ internal static unsafe class ClrHost
 	public static string ResetScriptState() =>
 		CallBridge("ResetScriptState", string.Empty, IntPtr.Zero);
 
+	// Inspect one managed object's fields (!fields). The address (as text) + debug client go to the
+	// bridge, which does the ClrMD read and returns a formatted listing.
+	public static string Fields(string addressText, IntPtr debugClient) =>
+		CallBridge("FieldsText", addressText, debugClient);
+
+	// List the persistent !cs session's variables (!csvars). State lives in the bridge.
+	public static string SessionVars() =>
+		CallBridge("SessionVars", string.Empty, IntPtr.Zero);
+
 	// One route to any (string, IntPtr) -> string entry point on the bridge. Both bridge methods are
 	// UNMANAGEDCALLERSONLY and return an HGlobal UTF-16 string that WE own and must free.
 	private static string CallBridge(string bridgeMethodName, string argumentText, IntPtr debugClient)

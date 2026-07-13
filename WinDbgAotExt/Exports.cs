@@ -49,6 +49,14 @@ public static unsafe class Exports
 	[UnmanagedCallersOnly(EntryPoint = "csreset")]
 	public static int CsReset(IntPtr client, byte* args) => CommandHost.Run("csreset", client, args);
 
+	// List the persistent !cs session's variables
+	[UnmanagedCallersOnly(EntryPoint = "csvars")]
+	public static int CsVars(IntPtr client, byte* args) => CommandHost.Run("csvars", client, args);
+
+	// Inspect one managed object's instance fields by address
+	[UnmanagedCallersOnly(EntryPoint = "fields")]
+	public static int Fields(IntPtr client, byte* args) => CommandHost.Run("fields", client, args);
+
 	// Triage the current break (benign deliberate break vs real fault + culprit module)
 	[UnmanagedCallersOnly(EntryPoint = "wiltriage")]
 	public static int Wiltriage(IntPtr client, byte* args) => CommandHost.Run("wiltriage", client, args);

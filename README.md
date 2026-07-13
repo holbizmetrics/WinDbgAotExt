@@ -58,7 +58,8 @@ output through the live `IDebugControl::Output` path, and returns cleanly — no
 
 - Exports: `DebugExtensionInitialize` (reports the version declared in `CommandHost.EXT_VERSION_*`,
   today v1.3), `DebugExtensionUninitialize`, `DebugExtensionNotify`, plus commands `hello`, `echo`,
-  `version`, `clrtest`, `cs`, `csreset` (clear the persistent `!cs` session), and `wiltriage`
+  `version`, `clrtest`, `cs`, `csreset` (clear the persistent `!cs` session), `csvars` (list the
+  session's variables), `fields` (inspect one managed object's fields by address), and `wiltriage`
   (break triage — see the Roadmap section).
 - Command dispatch through `CommandHost` with a UTF-8 arg parser; output via the `IDebugControl`
   vtable (`Output` is index **14**, not 8 — a real bug fixed in `0a4dcbc`, **confirmed live**).
@@ -127,7 +128,24 @@ cdb> !csreset                            # drop every declared variable
 Two things it handles for you: **the debugger eats semicolons** (WinDbg/cdb treat `;` as a *command
 separator*, so a trailing `;` never reaches C# — a failed compile is retried with it restored), and
 a failed submission **leaves the session intact** (a typo doesn't wipe your variables). `debugger` is
-re-bound on every submission, so it never talks to a stale debug client.
+re-bound on every submission, so it never talks to a stale debug client. `!csvars` lists what you've
+declared; `!csreset` clears it.
+
+**`!fields <address>` — the inspector.** The census (`!cs debugger.Heap.Objects…`) finds *which*
+object; `!fields` reads *what's inside* one, its instance fields by name / declared type / value.
+Object-reference fields print the referent's address so you drill in with another `!fields`:
+
+```
+cdb> !cs debugger.Heap.Objects.First(o => o.TypeName == "Widget").Address.ToString("x")
+19b3c445360
+cdb> !fields 0x19b3c445360
+  System.Int32 <Id>k__BackingField = 0
+  System.String <Label>k__BackingField = "widget-0"
+```
+
+Accepts `0x`-prefixed, bare, or WinDbg backtick-grouped addresses. Managed objects only (it reads
+the CLR heap via ClrMD); a native target says so. This is the ClrMD heap-object twin of the
+frame-local struct read on the Roadmap (the `wil::FailureInfo` decode).
 
 Scripts reach the live target through a `debugger` object (the debug client, handed in per command):
 - `debugger.Exec("cmd")` — run a WinDbg command.

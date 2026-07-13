@@ -24,6 +24,8 @@ public static unsafe class CommandHost
 		Register("clrtest", ClrTestHandler);   // Layer 2, step 3a: boot CoreCLR + Ping -> 4242
 		Register("cs", CsHandler);             // Layer 2, step 3b: run live C# via Roslyn
 		Register("csreset", CsResetHandler);   // drop the persistent !cs session state
+		Register("csvars", CsVarsHandler);     // list the persistent !cs session's variables
+		Register("fields", FieldsHandler);     // inspect one managed object's fields by name + value
 		Register("wiltriage", WiltriageHandler); // triage the current break: benign vs fault + culprit
 	}
 
@@ -117,6 +119,27 @@ public static unsafe class CommandHost
 	private static int CsResetHandler(IntPtr _, IntPtr ctrl, IReadOnlyList<string> __, string ___)
 	{
 		DbgEng.DbgOutLine(ctrl, ClrHost.ResetScriptState());
+		return 0;
+	}
+
+	// List variables declared in the persistent !cs session (type + name + value).
+	private static int CsVarsHandler(IntPtr _, IntPtr ctrl, IReadOnlyList<string> __, string ___)
+	{
+		DbgEng.DbgOutLine(ctrl, ClrHost.SessionVars());
+		return 0;
+	}
+
+	// !fields <address> : inspect ONE managed object -- its instance fields by name, declared type, and
+	// value. The census (!cs debugger.Heap.Objects...) finds the address; this reads what's inside it.
+	// Object-reference fields print their referent's address so you drill in with another !fields.
+	// Routed to a DEDICATED bridge entry point, NOT through !cs: the persistent session forbids
+	// re-declaring a variable, so a scripted implementation would compile-error on the second call and
+	// would pollute the operator's session with internal locals.
+	private static int FieldsHandler(IntPtr client, IntPtr ctrl, IReadOnlyList<string> __, string raw)
+	{
+		string addressText = (raw ?? string.Empty).Trim();
+		if (addressText.Length == 0) { DbgEng.DbgOutLine(ctrl, "usage: !fields <object-address>   (hex; get one from  !cs debugger.Heap.Objects.First().Address )"); return 0; }
+		DbgEng.DbgOutLine(ctrl, ClrHost.Fields(addressText, client));
 		return 0;
 	}
 

@@ -32,6 +32,9 @@
          where this repo's interop bugs have lived), unit-tested against hand-built
          DEBUG_LAST_EVENT_INFO_EXCEPTION buffers without a live debugger. -->
     <Compile Include="..\bridge\LastEventInfo.cs" Link="LastEventInfo.cs" />
+    <!-- The pure half of !fields: address parsing + listing formatting. The ClrMD read (Debugger.Fields)
+         stays in Bridge.cs and is proven in cdb; these seams are locked here. -->
+    <Compile Include="..\bridge\FieldInfo.cs" Link="FieldInfo.cs" />
   </ItemGroup>
 
 </Project>
