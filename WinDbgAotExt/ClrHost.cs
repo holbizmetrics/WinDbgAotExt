@@ -88,26 +88,36 @@ internal static unsafe class ClrHost
 
 	// Compile + run live C# via Roslyn in the hosted CoreCLR, handing the script the debugger client
 	// so it can reach the live target (Debugger.Exec, ...). Returns the result string.
-	public static string Eval(string sourceCode, IntPtr debugClient)
+	public static string Eval(string sourceCode, IntPtr debugClient) =>
+		CallBridge("Eval", sourceCode, debugClient);
+
+	// Drop the persistent !cs session state (every variable the operator declared). The bridge owns
+	// the state; this is just the native-side route to it.
+	public static string ResetScriptState() =>
+		CallBridge("ResetScriptState", string.Empty, IntPtr.Zero);
+
+	// One route to any (string, IntPtr) -> string entry point on the bridge. Both bridge methods are
+	// UNMANAGEDCALLERSONLY and return an HGlobal UTF-16 string that WE own and must free.
+	private static string CallBridge(string bridgeMethodName, string argumentText, IntPtr debugClient)
 	{
 		var error = EnsureBooted();
 		if (error != null) return "CLR boot failed: " + error;
-		IntPtr evalFunctionPointer;
+		IntPtr bridgeFunctionPointer;
 		fixed (char* assemblyPath = _bridgeDllPath)
 		fixed (char* typeName = "WinDbgAotExt.Bridge.Bridge, WinDbgAotExt.Bridge")
-		fixed (char* methodName = "Eval")
+		fixed (char* methodName = bridgeMethodName)
 		{
 			void* functionPointer;
 			int hresult = _loadAssemblyAndGetFunctionPointer(assemblyPath, typeName, methodName,
 				(char*)(nint)(-1), null, &functionPointer); // (char*)-1 = UNMANAGEDCALLERSONLY_METHOD
-			if (hresult != 0) return $"load Eval failed 0x{hresult:X8}";
-			evalFunctionPointer = (IntPtr)functionPointer;
+			if (hresult != 0) return $"load {bridgeMethodName} failed 0x{hresult:X8}";
+			bridgeFunctionPointer = (IntPtr)functionPointer;
 		}
-		var evaluate = (delegate* unmanaged<IntPtr, IntPtr, IntPtr>)evalFunctionPointer; // (codeUtf16, debugClient) -> resultUtf16
-		IntPtr codePointer = Marshal.StringToHGlobalUni(sourceCode);
-		IntPtr resultPointer = evaluate(codePointer, debugClient);
+		var callBridgeEntryPoint = (delegate* unmanaged<IntPtr, IntPtr, IntPtr>)bridgeFunctionPointer; // (textUtf16, debugClient) -> resultUtf16
+		IntPtr argumentPointer = Marshal.StringToHGlobalUni(argumentText);
+		IntPtr resultPointer = callBridgeEntryPoint(argumentPointer, debugClient);
 		string result = Marshal.PtrToStringUni(resultPointer) ?? "(null)";
-		Marshal.FreeHGlobal(codePointer);
+		Marshal.FreeHGlobal(argumentPointer);
 		if (resultPointer != IntPtr.Zero) Marshal.FreeHGlobal(resultPointer);
 		return result;
 	}

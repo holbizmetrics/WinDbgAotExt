@@ -58,7 +58,7 @@ output through the live `IDebugControl::Output` path, and returns cleanly — no
 
 - Exports: `DebugExtensionInitialize` (reports the version declared in `CommandHost.EXT_VERSION_*`, today v1.3), `DebugExtensionUninitialize`,
   `DebugExtensionNotify`, plus commands `hello`, `echo`, `version`, `clrtest`, `cs`, and
-  `wiltriage` (break triage — see the Roadmap section).
+  `wiltriage` (break triage — see the Roadmap section), and `csreset` (clear the persistent `!cs` session).
 - Command dispatch through `CommandHost` with a UTF-8 arg parser; output via the `IDebugControl`
   vtable (`Output` is index **14**, not 8 — a real bug fixed in `0a4dcbc`, **confirmed live**).
 - **Three independent test layers, all green:**
@@ -103,6 +103,26 @@ cdb> !cs debugger.Heap.Objects.Count(o => o.TypeName == "Widget")       # walk t
 cdb> !cs debugger.Heap.Objects.GroupBy(o => o.TypeName).OrderByDescending(g => g.Sum(o => (long)o.Size)).First().Key
 System.Byte[]                                                           # the leak-hunt: biggest type by total bytes
 ```
+
+**`!cs` is a SESSION, not a calculator.** State persists across invocations (Roslyn `ScriptState`
+continuation), so a variable declared in one command is still there in the next — build up an
+investigation step by step instead of re-typing one giant expression:
+
+```
+cdb> !cs var big = debugger.Heap.Objects.Where(o => o.Size > 85000).ToList()
+(no value -- declaration stored in the !cs session)
+cdb> !cs big.Count                       # 'big' survived
+57
+cdb> !cs big.GroupBy(o => o.TypeName).OrderByDescending(g => g.Count()).First().Key
+System.Byte[]
+cdb> !csreset                            # drop every declared variable
+!cs session reset -- all script variables dropped.
+```
+
+Two things it handles for you: **the debugger eats semicolons** (WinDbg/cdb treat `;` as a *command
+separator*, so a trailing `;` never reaches C# — a failed compile is retried with it restored), and
+a failed submission **leaves the session intact** (a typo doesn't wipe your variables). `debugger` is
+re-bound on every submission, so it never talks to a stale debug client.
 
 Scripts reach the live target through a `debugger` object (the debug client, handed in per command):
 - `debugger.Exec("cmd")` — run a WinDbg command.

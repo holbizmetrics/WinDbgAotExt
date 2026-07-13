@@ -329,6 +329,63 @@ namespace WinDbgAotExt.Bridge
 		// JIT code and returned.
 		public static int Ping(IntPtr argument, int argumentSizeBytes) => 4242;
 
+		// The live C# SESSION. Roslyn's ScriptState is the continuation point: each !cs submission
+		// continues the previous one, so variables, methods and usings declared in one command are
+		// still there in the next:
+		//     !cs var big = debugger.Heap.Objects.Where(o => o.Size > 85000).ToList();
+		//     !cs big.Count                                  <- 'big' still exists
+		// Without this every submission compiled from scratch and !cs was a calculator, not a session.
+		private static ScriptState<object>? _scriptState;
+
+		// Reset the session (!csreset): drop every variable the operator declared. Also the escape
+		// hatch when a script wedges the state (e.g. a variable holding a stale target's objects).
+		[UnmanagedCallersOnly]
+		public static IntPtr ResetScriptState(IntPtr unused, IntPtr alsoUnused)
+		{
+			bool hadState = _scriptState != null;
+			_scriptState = null;
+			return Marshal.StringToHGlobalUni(hadState
+				? "!cs session reset -- all script variables dropped."
+				: "!cs session was already empty.");
+		}
+
+		// Run one submission, returning null + the exception instead of throwing. Each call's exception is
+		// caught and fully unwound before the caller decides anything -- see the sequencing note in Eval.
+		private static ScriptState<object>? TryRunSubmission(string code, out Exception? error)
+		{
+			try
+			{
+				error = null;
+				return _scriptState == null
+					? CSharpScript.RunAsync<object>(code, BuildScriptOptions()).GetAwaiter().GetResult()
+					: _scriptState.ContinueWithAsync<object>(code, BuildScriptOptions()).GetAwaiter().GetResult();
+			}
+			catch (Exception exception)
+			{
+				error = exception;
+				return null;
+			}
+		}
+
+		// Only retry with an appended ';' when the submission plausibly LOST one to the debugger's
+		// command splitter -- never when the operator's code is simply wrong. Guard: it must not already
+		// end in ';' or '}' (a completed statement/block), which is what a genuine syntax error looks like.
+		// char overloads, deliberately: EndsWith(string) is CULTURE-AWARE and drags in ICU -- avoidable
+		// work on a path reached from an exception, and the frame the stack overflow above died on.
+		internal static bool NeedsTerminator(string sourceCode)
+		{
+			string trimmed = sourceCode.TrimEnd();
+			return trimmed.Length > 0 && !trimmed.EndsWith(';') && !trimmed.EndsWith('}');
+		}
+
+		private static ScriptOptions BuildScriptOptions() => ScriptOptions.Default
+			.WithReferences(
+				typeof(object).Assembly,                          // System.Private.CoreLib / System.Runtime
+				typeof(System.Linq.Enumerable).Assembly,          // System.Linq
+				typeof(System.Collections.Generic.List<>).Assembly,
+				typeof(Debugger).Assembly)                        // this bridge (so `Debugger` resolves)
+			.WithImports("System", "System.Linq", "System.Collections.Generic");
+
 		// Compile + run live C# via Roslyn INSIDE the hosted CoreCLR — the actual Layer-2 engine.
 		// Called via UNMANAGEDCALLERSONLY_METHOD. Takes a UTF-16 code string plus the debugger client
 		// (so scripts can reach the live target through `Debugger`), returns a UTF-16 result string
@@ -346,17 +403,48 @@ namespace WinDbgAotExt.Bridge
 				// compiles the script in another, so any Debugger/globals instance created here is a different
 				// type identity there (InvalidCastException). A pointer literal crosses cleanly; the instance
 				// the script constructs lives entirely inside Roslyn's context.
-				string preamble = $"var debugger = new WinDbgAotExt.Bridge.Debugger((System.IntPtr)({debugClient.ToInt64()}L));\n";
-				var scriptOptions = ScriptOptions.Default
-					.WithReferences(
-						typeof(object).Assembly,                          // System.Private.CoreLib / System.Runtime
-						typeof(System.Linq.Enumerable).Assembly,          // System.Linq
-						typeof(System.Collections.Generic.List<>).Assembly,
-						typeof(Debugger).Assembly)                        // this bridge (so `Debugger` resolves)
-					.WithImports("System", "System.Linq", "System.Collections.Generic");
-				object? resultValue = CSharpScript.EvaluateAsync<object>(preamble + sourceCode, scriptOptions)
-					.GetAwaiter().GetResult();
-				resultText = resultValue?.ToString() ?? "(null)";
+				//
+				// `debugger` is RE-BOUND on every submission, not just the first: dbgeng hands each command
+				// its own IDebugClient, and a session that cached the first pointer would keep talking to a
+				// stale client for the rest of its life. Declaration on the first submission, assignment on
+				// every later one -- so the operator's own variables survive while `debugger` stays current.
+				string debuggerBinding = _scriptState == null
+					? $"var debugger = new WinDbgAotExt.Bridge.Debugger((System.IntPtr)({debugClient.ToInt64()}L));\n"
+					: $"debugger = new WinDbgAotExt.Bridge.Debugger((System.IntPtr)({debugClient.ToInt64()}L));\n";
+
+				// A submission that throws leaves _scriptState untouched: a typo must not wipe the session.
+				// THE DEBUGGER EATS THE SEMICOLON. WinDbg and cdb treat ';' as a COMMAND separator, so
+				// "!cs var big = ...;" arrives here as "var big = ..." with the terminator stripped -- and a
+				// C# declaration without ';' does not compile. So a failed compile is retried with the ';'
+				// restored, or the persistent session is unusable for the exact thing it exists for:
+				// declaring variables. (Found by running it in a real cdb, not by reading the code.)
+				//
+				// The retry is deliberately sequenced FLAT -- first attempt, unwind, THEN decide -- instead
+				// of the obvious nested forms, both of which crashed the debugger for real:
+				//   * `catch (CompilationErrorException) when (NeedsTerminator(...))` runs the test in an
+				//     EXCEPTION FILTER, i.e. on the un-unwound stack, still deep inside Roslyn's compiler:
+				//     STACK OVERFLOW (it died in ICU, reached via the culture-aware string EndsWith).
+				//   * retrying from INSIDE the catch body throws the second exception while the first is
+				//     still being handled: EH dispatch on that same deep stack: STACK OVERFLOW again.
+				// Hence: no work in a filter, and no throw from within a handler. NeedsTerminator also uses
+				// the char overloads (ordinal, no ICU).
+				ScriptState<object>? nextState = TryRunSubmission(debuggerBinding + sourceCode, out Exception? firstError);
+
+				if (nextState == null && firstError is CompilationErrorException && NeedsTerminator(sourceCode))
+					nextState = TryRunSubmission(debuggerBinding + sourceCode + ";", out _);
+
+				if (nextState == null)
+				{
+					// Report the ORIGINAL error, not the retry's: the operator wrote the first version.
+					resultText = "ERROR " + firstError!.GetType().Name + ": " + firstError.Message;
+					return Marshal.StringToHGlobalUni(resultText);
+				}
+
+				// A failed submission leaves _scriptState untouched: a typo must not wipe the session.
+				_scriptState = nextState;
+				// A declaration-only submission ("var x = 5;") has no return value -- say so instead of
+				// printing "(null)", which reads like the expression evaluated to null.
+				resultText = nextState.ReturnValue?.ToString() ?? "(no value -- declaration stored in the !cs session)";
 			}
 			catch (Exception exception)
 			{

@@ -23,6 +23,7 @@ public static unsafe class CommandHost
 		Register("version", VersionHandler);
 		Register("clrtest", ClrTestHandler);   // Layer 2, step 3a: boot CoreCLR + Ping -> 4242
 		Register("cs", CsHandler);             // Layer 2, step 3b: run live C# via Roslyn
+		Register("csreset", CsResetHandler);   // drop the persistent !cs session state
 		Register("wiltriage", WiltriageHandler); // triage the current break: benign vs fault + culprit
 	}
 
@@ -99,10 +100,23 @@ public static unsafe class CommandHost
 
 	// Layer 2, step 3b/2c: run a live C# expression via Roslyn in the hosted CoreCLR, handing the
 	// script the debugger client (first handler arg) so it can reach the live target (Dbg.Exec, ...).
+	// The C# SESSION persists across invocations (Roslyn ScriptState continuation), so a variable
+	// declared in one !cs is still there in the next -- !cs is a session, not a calculator:
+	//   !cs var big = debugger.Heap.Objects.Where(o => o.Size > 85000).ToList();
+	//   !cs big.Count
+	// !csreset drops it.
 	private static int CsHandler(IntPtr client, IntPtr ctrl, IReadOnlyList<string> __, string raw)
 	{
-		if (string.IsNullOrWhiteSpace(raw)) { DbgEng.DbgOutLine(ctrl, "usage: !cs <C# expression>"); return 0; }
+		if (string.IsNullOrWhiteSpace(raw)) { DbgEng.DbgOutLine(ctrl, "usage: !cs <C# expression or statement>  (state persists; !csreset clears it)"); return 0; }
 		DbgEng.DbgOutLine(ctrl, ClrHost.Eval(raw, client));
+		return 0;
+	}
+
+	// Drop every variable declared in the persistent !cs session (fresh start; also the escape hatch
+	// if a stored variable holds objects from a target that is no longer the current one).
+	private static int CsResetHandler(IntPtr _, IntPtr ctrl, IReadOnlyList<string> __, string ___)
+	{
+		DbgEng.DbgOutLine(ctrl, ClrHost.ResetScriptState());
 		return 0;
 	}
 
