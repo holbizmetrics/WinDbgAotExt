@@ -155,6 +155,78 @@ namespace WinDbgAotExt.Bridge
 			return bytes.Length == 4 ? BitConverter.ToUInt32(bytes, 0) : 0;
 		}
 
+		// --- Typed last event: retires `.lastevent` string-sniffing for code + chance ---
+		// Slots verified against dbgeng.h 10.0.26100.0, anchored by the two already-proven slots
+		// (Output=14, Execute=66): GetDebuggeeType=34, GetLastEventInformation=94 (the interface's
+		// last method). Buffer decoding lives in LastEventInfo.Decode (pure, unit-tested).
+		private const int GetDebuggeeTypeSlot = 34;          // IDebugControl::GetDebuggeeType
+		private const int GetLastEventInformationSlot = 94;  // IDebugControl::GetLastEventInformation
+		private const uint DEBUG_DUMP_SMALL = 1024;          // lowest dump qualifier; >= means dump target
+
+		// True when the target is a dump file rather than a live process (GetDebuggeeType
+		// qualifier >= DEBUG_DUMP_SMALL). Dumps carry no live first/second-chance semantics.
+		public bool IsDumpTarget
+		{
+			get
+			{
+				if (_debugClient == IntPtr.Zero) return false;
+				nint** clientVtable = *(nint***)_debugClient;
+				var queryInterface = (delegate* unmanaged[Stdcall]<IntPtr, in Guid, out IntPtr, int>)clientVtable[QueryInterfaceSlot];
+				if (queryInterface(_debugClient, IID_IDebugControl, out IntPtr debugControl) != 0 || debugControl == IntPtr.Zero)
+					return false;
+				try
+				{
+					nint** controlVtable = *(nint***)debugControl;
+					var getDebuggeeType = (delegate* unmanaged[Stdcall]<IntPtr, out uint, out uint, int>)controlVtable[GetDebuggeeTypeSlot];
+					if (getDebuggeeType(debugControl, out uint targetClass, out uint qualifier) != 0) return false;
+					return qualifier >= DEBUG_DUMP_SMALL;
+				}
+				finally { ReleaseInterface(debugControl); }
+			}
+		}
+
+		// The debugger's last event as a typed object (IDebugControl::GetLastEventInformation).
+		// Null when there is no client or the call fails -- callers fall back to `.lastevent` text.
+		public LastEventInfo? LastEvent
+		{
+			get
+			{
+				if (_debugClient == IntPtr.Zero) return null;
+				nint** clientVtable = *(nint***)_debugClient;
+				var queryInterface = (delegate* unmanaged[Stdcall]<IntPtr, in Guid, out IntPtr, int>)clientVtable[QueryInterfaceSlot];
+				if (queryInterface(_debugClient, IID_IDebugControl, out IntPtr debugControl) != 0 || debugControl == IntPtr.Zero)
+					return null;
+				try
+				{
+					nint** controlVtable = *(nint***)debugControl;
+					var getLastEventInformation = (delegate* unmanaged[Stdcall]<
+						IntPtr, out uint, out uint, out uint, byte*, uint, out uint, byte*, uint, out uint, int>)
+						controlVtable[GetLastEventInformationSlot];
+					const int extraInformationCapacity = 256; // DEBUG_LAST_EVENT_INFO_EXCEPTION is 156 bytes
+					const int descriptionCapacity = 512;
+					byte* extraInformation = stackalloc byte[extraInformationCapacity];
+					byte* description = stackalloc byte[descriptionCapacity];
+					int hresult = getLastEventInformation(debugControl,
+						out uint eventType, out uint processId, out uint threadId,
+						extraInformation, extraInformationCapacity, out uint extraInformationUsed,
+						description, descriptionCapacity, out uint descriptionUsed);
+					if (hresult < 0) return null; // S_FALSE (1) = truncated but valid; only fail on errors
+					int extraInformationLength = (int)Math.Min(extraInformationUsed, extraInformationCapacity);
+					string descriptionText = Marshal.PtrToStringAnsi((IntPtr)description) ?? "";
+					return LastEventInfo.Decode(eventType, processId, threadId, descriptionText,
+						new ReadOnlySpan<byte>(extraInformation, extraInformationLength), IsDumpTarget);
+				}
+				finally { ReleaseInterface(debugControl); }
+			}
+		}
+
+		private static void ReleaseInterface(IntPtr interfacePointer)
+		{
+			nint** vtable = *(nint***)interfacePointer;
+			var release = (delegate* unmanaged[Stdcall]<IntPtr, uint>)vtable[ReleaseSlot];
+			release(interfacePointer);
+		}
+
 		// --- Queryable state: loaded modules as typed objects, LINQ-able ---
 		// (Parses `lm` output for now — honest and dependency-free; a future slice can back this with
 		//  IDebugSymbols for robustness. Runs `lm` on each access.)

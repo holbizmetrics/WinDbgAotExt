@@ -38,8 +38,25 @@ namespace WinDbgAotExt.Bridge
         public static string Classify(string? lastEventText, string? stackText, bool stackFromException = false)
         {
             lastEventText ??= string.Empty;
-            string exceptionCode = ExtractCode(lastEventText);
-            string chance = ExtractChance(lastEventText);   // "1st" | "2nd" | "unknown"
+            return ClassifyCore(ExtractCode(lastEventText), ExtractChance(lastEventText), stackText, stackFromException);
+        }
+
+        // Typed entry: consumes Debugger.LastEvent (IDebugControl::GetLastEventInformation) so the
+        // exception code and chance are structured data, not substrings of `.lastevent` -- the layer
+        // where BOTH cold-dump bugs lived (the "not available" chance false-positive and the
+        // dump-writer-thread stack). A debugger-set breakpoint event classifies down the same
+        // deliberate-int3 path as a hard-coded 80000003. Null falls back to the text path upstream.
+        public static string Classify(LastEventInfo lastEvent, string? stackText, bool stackFromException = false)
+        {
+            string exceptionCode =
+                lastEvent.IsException ? lastEvent.ExceptionCode.ToString("x8")
+                : lastEvent.IsBreakpoint ? "80000003"
+                : string.Empty;
+            return ClassifyCore(exceptionCode, lastEvent.Chance, stackText, stackFromException);
+        }
+
+        private static string ClassifyCore(string exceptionCode, string chance, string? stackText, bool stackFromException)
+        {
             string culpritModule = FindCulprit(stackText, out string innermostFrame);
 
             string chanceLabel = exceptionCode.Length == 0 ? string.Empty

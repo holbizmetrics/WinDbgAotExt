@@ -62,8 +62,9 @@ output through the live `IDebugControl::Output` path, and returns cleanly — no
 - Command dispatch through `CommandHost` with a UTF-8 arg parser; output via the `IDebugControl`
   vtable (`Output` is index **14**, not 8 — a real bug fixed in `0a4dcbc`, **confirmed live**).
 - **Three independent test layers, all green:**
-  - `WinDbgAotExt.Tests` — xUnit, **26/26**: the `Argv` parser (11), **the native Output path**
-    (6), and the `WilTriage` classifier goldens (9). `DbgEngOutputTests` hand-builds a mock `IDebugClient`/`IDebugControl` with real native
+  - `WinDbgAotExt.Tests` — xUnit, **37/37**: the `Argv` parser (11), **the native Output path**
+    (6), the `WilTriage` classifier goldens (9), and the typed last-event decoder + typed-classify
+    goldens (11). `DbgEngOutputTests` hand-builds a mock `IDebugClient`/`IDebugControl` with real native
     vtables, puts a capturing function at `Output` index 14, and asserts the exact bytes each
     command emits through `enter → QueryInterface → dispatch → Output → return`. No WinDbg needed.
   - `tools/load-harness.ps1` — native ABI proof *without WinDbg*, **14/14**: LoadLibrary the AOT
@@ -183,8 +184,13 @@ record carried `Parameter[0]=0`, so the reason is only recoverable by reading th
 the failing frame's locals. The extension cannot do this yet. Four capabilities, none currently on
 the Remaining list above, are required -- in priority order:
 
-1. `debugger.LastEvent` -- exception code + record as a typed object
-   (`IDebugControl::GetLastEventInformation`). Also retires v1's `.lastevent` string-sniffing.
+1. ~~`debugger.LastEvent`~~ **SHIPPED**: exception code + record as a typed object
+   (`IDebugControl::GetLastEventInformation`, vtable slot 94, header-verified) plus
+   `debugger.IsDumpTarget` (`GetDebuggeeType`, slot 34 -- dump targets honestly demote chance to
+   `unknown`). `!wiltriage` now feeds on the typed object; `.lastevent` text parsing survives only
+   as the fallback when the typed call fails. Live-proven both arms (live target: `1st chance`
+   matching cdb's banner; minidump: `chance-unknown` + `via .ecxr`). Decoder offsets unit-tested
+   in `LastEventInfoTests`.
 2. `debugger.Stack` -- stack frames as typed objects (module / offset / **symbol** / disp), the
    native twin of `debugger.Modules`.
 3. a symbol resolver -- address -> `module!symbol+disp` via `IDebugSymbols` (the slice the Modules
@@ -268,6 +274,7 @@ To load it in WinDbg once you have the DLL:
 | `WinDbgAotExt/ClrHost.cs` | boots CoreCLR via `hostfxr` + calls the bridge (behind `!clrtest` / `!cs`) |
 | `layer2/bridge/Bridge.cs` | managed Roslyn engine + the `Debugger` debuggee surface (`Exec` / `Run` / `ReadU64` / `Modules` / `Heap`) |
 | `layer2/bridge/WilTriage.cs` | pure break-triage classifier behind `!wiltriage` (compiled into the bridge, linked into the tests) |
+| `layer2/bridge/LastEventInfo.cs` | typed last-event POCO + pure `DEBUG_LAST_EVENT_INFO_EXCEPTION` buffer decoder (offsets unit-tested; feeds `WilTriage` typed path) |
 | `layer2/host/Host.cs` | standalone AOT-hosts-CoreCLR spike (proves the seam without WinDbg) |
 | `tools/heaptarget/` | a managed test debuggee (allocates 1000 known objects, parks) for exercising `debugger.Heap` |
 | `tools/heapwalk.cdb` | cdb script: attach, `.load`, LINQ the heap — the `debugger.Heap` live test |
