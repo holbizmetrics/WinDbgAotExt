@@ -204,6 +204,16 @@ wrong index is this project's signature crash).
 
 - Native AOT (no CoreCLR of its own) → `hostfxr_initialize_for_runtime_config` is the *first* init in
   the debugger process, which is why hosting works (a managed host fails `0x80008081`).
+- **Proven host: `cdb` / native WinDbg.** That "first init" is a real precondition, not a detail.
+  **Measured** (`Host <bridge-dir> --probe-double-init`, AOT, hostfxr 10.x): when a runtime is
+  already initialized in the process and its context is still open, the second
+  `hostfxr_initialize_for_runtime_config` **never returns — it blocks**, which from the outside looks
+  like the extension wedging the debugger. So `ClrHost` now refuses *before* calling hostfxr if a CLR
+  is already loaded (`coreclr.dll`/`hostpolicy.dll`/`clr.dll`), and treats hostfxr's
+  `Success_HostAlreadyInitialized` (1) / `Success_DifferentRuntimeProperties` (2) as refusals too —
+  both mean the runtime you got is not necessarily the .NET 10 the bridge asked for. Override with
+  `WINDBGAOTEXT_FORCE_BOOT=1` if you want to try anyway. A .NET-hosting debugger front-end is
+  **not supported**; use `cdb` or native WinDbg.
 - `bridge` = the managed "brain" (Roslyn + the `Debugger` debuggee surface); `host` =
   the standalone AOT-hosts-CoreCLR spike; `WinDbgAotExt/ClrHost.cs` boots the runtime behind
   `!clrtest` / `!cs`.
