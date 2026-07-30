@@ -6,10 +6,12 @@ using System.Runtime.InteropServices;
 
 namespace WinDbgAotExt;
 
-// LAYER 2 inside the extension: boots CoreCLR in-process (via hostfxr) and calls the managed Bridge,
-// so a WinDbg command can run live C# through Roslyn. The extension is NativeAOT (no CoreCLR of its
-// own), so our hostfxr_initialize_for_runtime_config is the FIRST init in the debugger's process —
-// which is exactly why this works (proven in the host/ spike; this ports it into the .load'able DLL).
+/// <summary>
+/// LAYER 2 inside the extension: boots CoreCLR in-process (via hostfxr) and calls the managed Bridge,
+/// so a WinDbg command can run live C# through Roslyn. The extension is NativeAOT (no CoreCLR of its
+/// own), so our hostfxr_initialize_for_runtime_config is the FIRST init in the debugger's process —
+/// which is exactly why this works (proven in the host/ spike; this ports it into the .load'able DLL).
+/// </summary>
 internal static unsafe class ClrHost
 {
 	private const int RuntimeDelegateLoadAssemblyAndGetFunctionPointer = 5;
@@ -23,7 +25,8 @@ internal static unsafe class ClrHost
 	// A method whose address lies inside THIS DLL — used to locate our own module path.
 	[UnmanagedCallersOnly] private static void ModuleAnchor() { }
 
-	// Boots the runtime once (cached). Returns null on success, else a human-readable error string.
+	/// <summary>Boots the runtime once (cached).</summary>
+	/// <returns>Null on success, else a human-readable error string.</returns>
 	public static string? EnsureBooted()
 	{
 		if (_isBooted) return null;
@@ -68,7 +71,8 @@ internal static unsafe class ClrHost
 		}
 	}
 
-	// Step-3a de-risk: prove the extension can reach managed CoreCLR code. Returns 4242 on success.
+	/// <summary>Step-3a de-risk: prove the extension can reach managed CoreCLR code.</summary>
+	/// <returns>4242 on success; -1 on boot or load failure.</returns>
 	public static int Ping()
 	{
 		if (EnsureBooted() != null) return -1;
@@ -86,30 +90,36 @@ internal static unsafe class ClrHost
 		return ping(IntPtr.Zero, 0);
 	}
 
-	// Compile + run live C# via Roslyn in the hosted CoreCLR, handing the script the debugger client
-	// so it can reach the live target (Debugger.Exec, ...). Returns the result string.
+	/// <summary>
+	/// Compile + run live C# via Roslyn in the hosted CoreCLR, handing the script the debugger client
+	/// so it can reach the live target (Debugger.Exec, ...).
+	/// </summary>
 	public static string Eval(string sourceCode, IntPtr debugClient) =>
 		CallBridge("Eval", sourceCode, debugClient);
 
-	// Drop the persistent !cs session state (every variable the operator declared). The bridge owns
-	// the state; this is just the native-side route to it.
+	/// <summary>
+	/// Drop the persistent !cs session state (every variable the operator declared). The bridge owns
+	/// the state; this is just the native-side route to it.
+	/// </summary>
 	public static string ResetScriptState() =>
 		CallBridge("ResetScriptState", string.Empty, IntPtr.Zero);
 
-	// Inspect one managed object's fields (!fields). The address (as text) + debug client go to the
-	// bridge, which does the ClrMD read and returns a formatted listing.
+	/// <summary>
+	/// Inspect one managed object's fields (<c>!fields</c>). The address (as text) + debug client go
+	/// to the bridge, which does the ClrMD read and returns a formatted listing.
+	/// </summary>
 	public static string Fields(string addressText, IntPtr debugClient) =>
 		CallBridge("FieldsText", addressText, debugClient);
 
-	// List the persistent !cs session's variables (!csvars). State lives in the bridge.
+	/// <summary>List the persistent !cs session's variables (<c>!csvars</c>). State lives in the bridge.</summary>
 	public static string SessionVars() =>
 		CallBridge("SessionVars", string.Empty, IntPtr.Zero);
 
-	// Filter the managed heap for strings (!strings [pattern]). Args text + client go to the bridge.
+	/// <summary>Filter the managed heap for strings (<c>!strings [pattern]</c>). Args text + client go to the bridge.</summary>
 	public static string Strings(string arguments, IntPtr debugClient) =>
 		CallBridge("StringsText", arguments, debugClient);
 
-	// Write the triage report (!report [path]). Path text + client go to the bridge.
+	/// <summary>Write the triage report (<c>!report [path]</c>). Path text + client go to the bridge.</summary>
 	public static string WriteReport(string path, IntPtr debugClient) =>
 		CallBridge("WriteReport", path, debugClient);
 

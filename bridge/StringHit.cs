@@ -5,26 +5,45 @@ using System.Text.RegularExpressions;
 
 namespace WinDbgAotExt.Bridge
 {
-    // One managed string found on the heap: its object address and value. Plain fields so a script can
-    // LINQ them (debugger.Strings(...)), and the command can format them.
+    /// <summary>
+    /// One managed string found on the heap: its object address and value. Plain fields so a script can
+    /// LINQ them (<c>debugger.Strings(...)</c>), and the command can format them.
+    /// </summary>
     public sealed class StringHit
     {
+        /// <summary>Object address of the string on the managed heap.</summary>
         public ulong Address { get; init; }
+
+        /// <summary>The string's value.</summary>
         public string Value { get; init; } = "";
+
+        /// <summary>One listing line: <c>0xADDR  "value"</c>.</summary>
         public override string ToString() => $"  0x{Address:x}  \"{Value}\"";
     }
 
-    // The PURE half of !strings: pattern compilation and listing formatting. Dependency-free (no ClrMD),
-    // so it links into the test project like FieldRendering / WilTriage and every rule is unit-tested.
-    // The heap WALK (Debugger.Strings) lives in Bridge.cs and is proven in cdb.
+    /// <summary>
+    /// The PURE half of <c>!strings</c>: pattern compilation and listing formatting. Dependency-free
+    /// (no ClrMD), so it links into the test project like FieldRendering / WilTriage and every rule is
+    /// unit-tested. The heap WALK (<c>Debugger.Strings</c>) lives in Bridge.cs and is proven in cdb.
+    /// </summary>
     public static class StringRendering
     {
-        // A managed heap holds a LOT of strings; the command shows at most this many and reports the rest.
+        /// <summary>
+        /// A managed heap holds a LOT of strings; the command shows at most this many and reports the rest.
+        /// </summary>
         public const int DefaultCap = 200;
 
-        // Compile the operator's regex, or report why it won't. Empty/whitespace pattern = "match all"
-        // (null regex). Returns false only on an INVALID pattern, so the caller can surface it instead of
-        // throwing deep in the heap walk.
+        /// <summary>
+        /// Compile the operator's regex, or report why it won't. Empty/whitespace pattern = "match all"
+        /// (null regex).
+        /// </summary>
+        /// <param name="pattern">The operator's pattern; empty or whitespace means match-all.</param>
+        /// <param name="regex">The compiled regex, or null for match-all.</param>
+        /// <param name="error">The operator-facing message when the pattern is invalid.</param>
+        /// <returns>
+        /// False only on an INVALID pattern, so the caller can surface it instead of throwing deep in
+        /// the heap walk.
+        /// </returns>
         public static bool TryCompilePattern(string? pattern, out Regex? regex, out string? error)
         {
             regex = null;
@@ -42,8 +61,14 @@ namespace WinDbgAotExt.Bridge
             }
         }
 
-        // Render the listing the operator sees. `totalMatched` is how many strings matched BEFORE the cap,
-        // so a truncated listing says how many were dropped (never silently hide the tail).
+        /// <summary>
+        /// Render the listing the operator sees. A truncated listing always says how many strings were
+        /// dropped (never silently hide the tail).
+        /// </summary>
+        /// <param name="shown">The hits actually rendered (already capped).</param>
+        /// <param name="totalMatched">How many strings matched BEFORE the cap, so the truncation note is honest.</param>
+        /// <param name="cap">The cap that was applied (part of the operator's mental model, not re-derived).</param>
+        /// <param name="pattern">The pattern used, echoed in the header; null/empty means unfiltered.</param>
         public static string Format(List<StringHit> shown, int totalMatched, int cap, string? pattern)
         {
             string scope = string.IsNullOrWhiteSpace(pattern) ? "" : $" matching /{pattern}/";

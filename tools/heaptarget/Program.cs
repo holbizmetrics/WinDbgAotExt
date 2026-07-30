@@ -19,6 +19,7 @@ GC.KeepAlive(widgets);
 GC.KeepAlive(payloads);
 while (true) Thread.Sleep(1000);
 
+/// <summary>A distinctive, rooted object the heap-walk commands can find and inspect.</summary>
 sealed class Widget
 {
     public int Id { get; init; }

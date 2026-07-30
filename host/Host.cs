@@ -5,8 +5,11 @@ using System.Runtime.InteropServices;
 
 namespace WinDbgAotExt.Host;
 
-// Boots CoreCLR in-process via hostfxr and calls the managed Bridge — the make-or-break Layer-2 seam.
-// Stands in for the native AOT WinDbg extension so the hosting can be proven without a debugger.
+/// <summary>
+/// Boots CoreCLR in-process via hostfxr and calls the managed Bridge — the make-or-break Layer-2
+/// seam. Stands in for the native AOT WinDbg extension so the hosting can be proven without a
+/// debugger.
+/// </summary>
 internal static unsafe class Program
 {
 	private const int RuntimeDelegateLoadAssemblyAndGetFunctionPointer = 5;

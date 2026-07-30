@@ -4,19 +4,26 @@ using System.Linq;
 
 namespace WinDbgAotExt.Bridge
 {
-    // Pure break-triage classifier behind the !wiltriage command. Takes the text of `.lastevent` and `k`
-    // (fetched by the caller via Debugger.Run) and returns a one-line verdict. Deliberately dependency-free
-    // and side-effect-free: it compiles into the bridge for the runtime path AND is linked into the test
-    // project, so every classification path is unit-tested without a live debugger.
-    //
-    // Honesty constraints from the TRIAD/KG audit that revised v1:
-    //  - The exception code tells you the DELIVERY MECHANISM, not the MEANING. 0x80000003 is an int3
-    //    (deliberate, never a hardware fault) but can still be a tripped assert / WIL check / heap-corruption
-    //    break -- so a breakpoint is reported as "deliberate, process alive", NOT unconditionally "benign".
-    //  - A first-chance access violation is routinely handled by the target; only a SECOND-chance one is a
-    //    real (unhandled) fault. The chance is read from `.lastevent`, never assumed.
-    //  - The culprit is the first non-framework frame's module -- a heuristic -- so the evidence
-    //    (code, chance, innermost frame) is always appended for the operator to audit the call.
+    /// <summary>
+    /// Pure break-triage classifier behind the <c>!wiltriage</c> command. Takes the text of
+    /// <c>.lastevent</c> and <c>k</c> (fetched by the caller via <c>Debugger.Run</c>) and returns a
+    /// one-line verdict. Deliberately dependency-free and side-effect-free: it compiles into the bridge
+    /// for the runtime path AND is linked into the test project, so every classification path is
+    /// unit-tested without a live debugger.
+    /// <para>Honesty constraints from the TRIAD/KG audit that revised v1:</para>
+    /// <list type="bullet">
+    /// <item><description>The exception code tells you the DELIVERY MECHANISM, not the MEANING. 0x80000003
+    /// is an int3 (deliberate, never a hardware fault) but can still be a tripped assert / WIL check /
+    /// heap-corruption break — so a breakpoint is reported as "deliberate, process alive", NOT
+    /// unconditionally "benign".</description></item>
+    /// <item><description>A first-chance access violation is routinely handled by the target; only a
+    /// SECOND-chance one is a real (unhandled) fault. The chance is read from <c>.lastevent</c>, never
+    /// assumed.</description></item>
+    /// <item><description>The culprit is the first non-framework frame's module — a heuristic — so the
+    /// evidence (code, chance, innermost frame) is always appended for the operator to audit the
+    /// call.</description></item>
+    /// </list>
+    /// </summary>
     public static class WilTriage
     {
         // Loader / CRT / COM / RPC / message-pump modules that are never themselves the reported culprit.
@@ -35,17 +42,31 @@ namespace WinDbgAotExt.Bridge
             "_assert", "_wassert", "FailFast", "ReportFault", "__fastfail",
         };
 
+        /// <summary>
+        /// Text entry: classify from the raw <c>.lastevent</c> and <c>k</c> output.
+        /// </summary>
+        /// <param name="lastEventText">The <c>.lastevent</c> text; null-safe.</param>
+        /// <param name="stackText">The <c>k</c> stack text the culprit is picked from; null = culprit unknown.</param>
+        /// <param name="stackFromException">True when the caller walked the stored exception context
+        /// (<c>.ecxr</c>) instead of the parked thread — the verdict then marks the culprit "via .ecxr".</param>
+        /// <returns>A one-line verdict with the evidence (code, chance, innermost frame) appended.</returns>
         public static string Classify(string? lastEventText, string? stackText, bool stackFromException = false)
         {
             lastEventText ??= string.Empty;
             return ClassifyCore(ExtractCode(lastEventText), ExtractChance(lastEventText), stackText, stackFromException);
         }
 
-        // Typed entry: consumes Debugger.LastEvent (IDebugControl::GetLastEventInformation) so the
-        // exception code and chance are structured data, not substrings of `.lastevent` -- the layer
-        // where BOTH cold-dump bugs lived (the "not available" chance false-positive and the
-        // dump-writer-thread stack). A debugger-set breakpoint event classifies down the same
-        // deliberate-int3 path as a hard-coded 80000003. Null falls back to the text path upstream.
+        /// <summary>
+        /// Typed entry: consumes <c>Debugger.LastEvent</c> (IDebugControl::GetLastEventInformation) so the
+        /// exception code and chance are structured data, not substrings of <c>.lastevent</c> — the layer
+        /// where BOTH cold-dump bugs lived (the "not available" chance false-positive and the
+        /// dump-writer-thread stack). A debugger-set breakpoint event classifies down the same
+        /// deliberate-int3 path as a hard-coded 80000003. Null falls back to the text path upstream.
+        /// </summary>
+        /// <param name="lastEvent">The typed last event from <c>Debugger.LastEvent</c>.</param>
+        /// <param name="stackText">The <c>k</c> stack text the culprit is picked from; null = culprit unknown.</param>
+        /// <param name="stackFromException">True when the stack came from <c>.ecxr</c>; see the text overload.</param>
+        /// <returns>A one-line verdict with the evidence appended.</returns>
         public static string Classify(LastEventInfo lastEvent, string? stackText, bool stackFromException = false)
         {
             string exceptionCode =

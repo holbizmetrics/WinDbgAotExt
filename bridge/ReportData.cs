@@ -4,42 +4,76 @@ using System.Text;
 
 namespace WinDbgAotExt.Bridge
 {
-    // One row in the report's module table.
+    /// <summary>One row in the report's module table.</summary>
     public sealed class ReportModule
     {
+        /// <summary>Module name (without path).</summary>
         public string Name { get; init; } = "";
+
+        /// <summary>Image size in bytes.</summary>
         public ulong Size { get; init; }
+
+        /// <summary>Image base address.</summary>
         public ulong Base { get; init; }
     }
 
-    // One row in the report's managed-heap rollup (a type and its total footprint).
+    /// <summary>One row in the report's managed-heap rollup (a type and its total footprint).</summary>
     public sealed class ReportHeapType
     {
+        /// <summary>Fully-qualified managed type name.</summary>
         public string TypeName { get; init; } = "";
+
+        /// <summary>How many instances were counted on the heap.</summary>
         public int Count { get; init; }
+
+        /// <summary>Total bytes across all counted instances.</summary>
         public long Bytes { get; init; }
     }
 
-    // Everything !report gathered, as plain data. Kept dependency-free (no ClrMD, no dbgeng) so the
-    // markdown ASSEMBLY (ReportRendering.Build) links into the test project and is unit-tested; the
-    // live GATHERING (Bridge.WriteReport) is proven in cdb.
+    /// <summary>
+    /// Everything <c>!report</c> gathered, as plain data. Kept dependency-free (no ClrMD, no dbgeng) so
+    /// the markdown ASSEMBLY (<see cref="ReportRendering.Build"/>) links into the test project and is
+    /// unit-tested; the live GATHERING (<c>Bridge.WriteReport</c>) is proven in cdb.
+    /// </summary>
     public sealed class ReportData
     {
+        /// <summary>Generation timestamp, preformatted by the gatherer.</summary>
         public string Generated { get; init; } = "";
-        public string TargetKind { get; init; } = "";     // "crash dump" | "live process" | "unknown"
-        public string VerTarget { get; init; } = "";       // raw `vertarget` output
+
+        /// <summary>"crash dump" | "live process" | "unknown".</summary>
+        public string TargetKind { get; init; } = "";
+
+        /// <summary>Raw <c>vertarget</c> output, echoed verbatim in the report.</summary>
+        public string VerTarget { get; init; } = "";
+
+        /// <summary>The one-line last-event rendering.</summary>
         public string LastEventLine { get; init; } = "";
+
+        /// <summary>The <c>!wiltriage</c> verdict for the current break.</summary>
         public string TriageVerdict { get; init; } = "";
+
+        /// <summary>Total number of loaded modules (the table below shows only the top N).</summary>
         public int ModuleCount { get; init; }
+
+        /// <summary>The largest modules by image size, already selected and ordered by the gatherer.</summary>
         public List<ReportModule> TopModules { get; init; } = new();
+
+        /// <summary>Number of threads in the target.</summary>
         public int ThreadCount { get; init; }
+
+        /// <summary>True when a CLR was found in the target.</summary>
         public bool ClrPresent { get; init; }
-        // null when the target is native (no managed heap); a list (possibly empty) when a CLR was found.
+
+        /// <summary>
+        /// Null when the target is native (no managed heap); a list (possibly empty) when a CLR was found.
+        /// </summary>
         public List<ReportHeapType>? TopHeapTypes { get; init; }
     }
 
-    // Pure markdown assembler. Given the gathered ReportData, produce the report a junior engineer or an
-    // AI can read without ever touching WinDbg — the whole point of the command.
+    /// <summary>
+    /// Pure markdown assembler. Given the gathered <see cref="ReportData"/>, produce the report a junior
+    /// engineer or an AI can read without ever touching WinDbg — the whole point of the command.
+    /// </summary>
     public static class ReportRendering
     {
         // Numbers are formatted with the INVARIANT culture, not the machine's: a report generated on a
@@ -48,6 +82,12 @@ namespace WinDbgAotExt.Bridge
         private static string Thousands(long value) => value.ToString("N0", CultureInfo.InvariantCulture);
         private static string Thousands(ulong value) => value.ToString("N0", CultureInfo.InvariantCulture);
 
+        /// <summary>
+        /// Assemble the full markdown report from the gathered data. Pure and deterministic — numbers use
+        /// the invariant culture so the same data yields byte-identical markdown on any locale.
+        /// </summary>
+        /// <param name="data">The gathered report data.</param>
+        /// <returns>The complete markdown document, ending in exactly one newline.</returns>
         public static string Build(ReportData data)
         {
             var builder = new StringBuilder();

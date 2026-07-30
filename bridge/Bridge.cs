@@ -8,12 +8,16 @@ using Microsoft.CodeAnalysis.Scripting;
 
 namespace WinDbgAotExt.Bridge
 {
-	// The debuggee surface exposed to scripts. Wraps the IDebugClient the extension passes in and
-	// calls dbgeng by vtable index (verified against dbgeng.h — Execute is index 66, anchored by the
-	// known-good Output=14).
+	/// <summary>
+	/// The debuggee surface exposed to scripts. Wraps the IDebugClient the extension passes in and
+	/// calls dbgeng by vtable index (verified against dbgeng.h — Execute is index 66, anchored by the
+	/// known-good Output=14).
+	/// </summary>
 	public sealed unsafe class Debugger
 	{
 		private readonly IntPtr _debugClient;
+
+		/// <summary>Wrap the extension's IDebugClient; scripts receive this as <c>debugger</c>.</summary>
 		public Debugger(IntPtr debugClient) { _debugClient = debugClient; }
 
 		private const uint DEBUG_OUTCTL_THIS_CLIENT = 0x0;
@@ -23,10 +27,15 @@ namespace WinDbgAotExt.Bridge
 		private const int ExecuteSlot = 66;   // IDebugControl::Execute (verified vs dbgeng.h)
 		private static readonly Guid IID_IDebugControl = new("5182e668-105e-416e-ad92-24ef800424ba");
 
+		/// <summary>True when a debug client was supplied (i.e. the script runs inside a live session).</summary>
 		public bool Connected => _debugClient != IntPtr.Zero;
 
-		// Run a WinDbg command in the live target. Output currently goes to the debugger console
-		// (capture-and-return is the next slice). Returns the HRESULT from IDebugControl::Execute.
+		/// <summary>
+		/// Run a WinDbg command in the live target. Output goes to the debugger console — use
+		/// <see cref="Run"/> to capture it instead.
+		/// </summary>
+		/// <param name="command">The WinDbg command, exactly as typed at the kd/cdb prompt.</param>
+		/// <returns>The HRESULT from IDebugControl::Execute.</returns>
 		public int Exec(string command)
 		{
 			if (_debugClient == IntPtr.Zero) return unchecked((int)0x80004005); // E_FAIL
@@ -97,6 +106,12 @@ namespace WinDbgAotExt.Bridge
 			return _capturingCallbacks;
 		}
 
+		/// <summary>
+		/// Run a WinDbg command and CAPTURE its output as text, so scripts can parse/LINQ it. The
+		/// previous output callbacks are always restored, even when the command throws.
+		/// </summary>
+		/// <param name="command">The WinDbg command, exactly as typed at the kd/cdb prompt.</param>
+		/// <returns>Everything the debugger printed while the command ran.</returns>
 		public string Run(string command)
 		{
 			if (_debugClient == IntPtr.Zero) return "(no debug client)";
@@ -116,6 +131,12 @@ namespace WinDbgAotExt.Bridge
 		private const int ReadVirtualSlot = 3;   // IDebugDataSpaces::ReadVirtual (verified vs dbgeng.h)
 		private static readonly Guid IID_IDebugDataSpaces = new("88f7dfab-3ea7-4c3a-aefb-c4e8106173aa");
 
+		/// <summary>
+		/// Read raw bytes from the target's virtual memory (IDebugDataSpaces::ReadVirtual). Short reads
+		/// return a truncated array; failures return an empty one — never throws.
+		/// </summary>
+		/// <param name="address">Virtual address in the target.</param>
+		/// <param name="count">Bytes requested.</param>
 		public byte[] ReadBytes(ulong address, int count)
 		{
 			if (_debugClient == IntPtr.Zero || count <= 0) return Array.Empty<byte>();
@@ -144,12 +165,14 @@ namespace WinDbgAotExt.Bridge
 			}
 		}
 
+		/// <summary>Read a 64-bit value from the target; 0 when the read fails (use <see cref="ReadBytes"/> to distinguish).</summary>
 		public ulong ReadU64(ulong address)
 		{
 			byte[] bytes = ReadBytes(address, 8);
 			return bytes.Length == 8 ? BitConverter.ToUInt64(bytes, 0) : 0;
 		}
 
+		/// <summary>Read a 32-bit value from the target; 0 when the read fails (use <see cref="ReadBytes"/> to distinguish).</summary>
 		public uint ReadU32(ulong address)
 		{
 			byte[] bytes = ReadBytes(address, 4);
@@ -164,12 +187,14 @@ namespace WinDbgAotExt.Bridge
 		private const int GetLastEventInformationSlot = 94;  // IDebugControl::GetLastEventInformation
 		private const uint DEBUG_DUMP_SMALL = 1024;          // lowest dump qualifier; >= means dump target
 
-		// True when the target is a dump file rather than a live process (GetDebuggeeType
-		// qualifier >= DEBUG_DUMP_SMALL); false when live; NULL when the query itself failed.
-		// The null case is load-bearing -- callers must NOT collapse "couldn't tell" into "live",
-		// or a dump whose stored FirstChance is 0 gets read as a real 2nd-chance fault, resurrecting
-		// on the error path the exact false positive the typed path exists to kill. LastEventInfo.Chance
-		// funnels null to "unknown".
+		/// <summary>
+		/// True when the target is a dump file rather than a live process (GetDebuggeeType
+		/// qualifier &gt;= DEBUG_DUMP_SMALL); false when live; NULL when the query itself failed.
+		/// The null case is load-bearing — callers must NOT collapse "couldn't tell" into "live",
+		/// or a dump whose stored FirstChance is 0 gets read as a real 2nd-chance fault, resurrecting
+		/// on the error path the exact false positive the typed path exists to kill.
+		/// <see cref="LastEventInfo.Chance"/> funnels null to "unknown".
+		/// </summary>
 		public bool? IsDumpTarget
 		{
 			get
@@ -190,8 +215,10 @@ namespace WinDbgAotExt.Bridge
 			}
 		}
 
-		// The debugger's last event as a typed object (IDebugControl::GetLastEventInformation).
-		// Null when there is no client or the call fails -- callers fall back to `.lastevent` text.
+		/// <summary>
+		/// The debugger's last event as a typed object (IDebugControl::GetLastEventInformation).
+		/// Null when there is no client or the call fails — callers fall back to <c>.lastevent</c> text.
+		/// </summary>
 		public LastEventInfo? LastEvent
 		{
 			get
@@ -232,9 +259,11 @@ namespace WinDbgAotExt.Bridge
 			release(interfacePointer);
 		}
 
-		// --- Queryable state: loaded modules as typed objects, LINQ-able ---
-		// (Parses `lm` output for now — honest and dependency-free; a future slice can back this with
-		//  IDebugSymbols for robustness. Runs `lm` on each access.)
+		/// <summary>
+		/// Loaded modules as typed objects, LINQ-able. Parses <c>lm</c> output for now — honest and
+		/// dependency-free; a future slice can back this with IDebugSymbols for robustness. Runs
+		/// <c>lm</c> on each access.
+		/// </summary>
 		public System.Collections.Generic.List<ModuleInfo> Modules
 		{
 			get
@@ -252,23 +281,28 @@ namespace WinDbgAotExt.Bridge
 			}
 		}
 
-		// --- Managed heap as typed objects (ClrMD), the "query the debuggee like a database" pillar ---
-		// Unlike Modules (parsed from `lm` text), this walks the target's real GC heap via ClrMD
-		// (Microsoft.Diagnostics.Runtime), which attaches to the SAME dbgeng session we're already in
-		// through DataTarget.CreateFromDbgEng(_debugClient). Only meaningful when the debuggee is a
-		// managed (.NET) process — a native target has no CLR heap (Heap.ClrPresent == false).
-		//
-		// All ClrMD work stays inside the bridge here; scripts only ever see our own HeapObjectInfo POCO
-		// (defined in this assembly, which Eval already references), so ClrMD never has to load in
-		// Roslyn's script load-context — sidestepping the Layer-2c cross-ALC type-identity trap.
+		/// <summary>
+		/// The managed heap as typed objects (ClrMD) — the "query the debuggee like a database" pillar.
+		/// Unlike <see cref="Modules"/> (parsed from <c>lm</c> text), this walks the target's real GC
+		/// heap via ClrMD (Microsoft.Diagnostics.Runtime), which attaches to the SAME dbgeng session
+		/// we're already in through DataTarget.CreateFromDbgEng. Only meaningful when the debuggee is a
+		/// managed (.NET) process — a native target has no CLR heap (<c>Heap.ClrPresent == false</c>).
+		/// <para>All ClrMD work stays inside the bridge; scripts only ever see our own HeapObjectInfo
+		/// POCO (defined in this assembly, which Eval already references), so ClrMD never has to load in
+		/// Roslyn's script load-context — sidestepping the Layer-2c cross-ALC type-identity trap.</para>
+		/// </summary>
 		public HeapView Heap => new HeapView(_debugClient);
 
-		// Inspect ONE managed object: its instance fields as typed FieldInfo POCOs (name / declared type /
-		// rendered value), so Heap stops being a census and becomes an inspector. The census finds the
-		// address (`debugger.Heap.Objects.Where(...).First().Address`); this reads what's inside it. Object
-		// -reference fields carry the referent's address in FieldInfo.ObjectAddress, so you drill in with
-		// another `!fields <addr>` -- one level per call, deliberately (no unbounded graph walk).
-		// Same cross-ALC discipline as Heap: all ClrMD stays here, only our POCOs cross to the script.
+		/// <summary>
+		/// Inspect ONE managed object: its instance fields as typed <see cref="FieldInfo"/> POCOs
+		/// (name / declared type / rendered value), so Heap stops being a census and becomes an
+		/// inspector. The census finds the address (<c>debugger.Heap.Objects.Where(...).First().Address</c>);
+		/// this reads what's inside it. Object-reference fields carry the referent's address in
+		/// <see cref="FieldInfo.ObjectAddress"/>, so you drill in with another <c>!fields &lt;addr&gt;</c>
+		/// — one level per call, deliberately (no unbounded graph walk). Same cross-ALC discipline as
+		/// <see cref="Heap"/>: all ClrMD stays here, only our POCOs cross to the script.
+		/// </summary>
+		/// <param name="address">The managed object's address on the GC heap.</param>
 		public System.Collections.Generic.List<FieldInfo> Fields(ulong address)
 		{
 			var fields = new System.Collections.Generic.List<FieldInfo>();
@@ -305,11 +339,15 @@ namespace WinDbgAotExt.Bridge
 			return fields;
 		}
 
-		// Walk the managed heap for System.String objects, optionally regex-filtered. Dumps are full of
-		// answers stored as strings — connection strings, URLs, paths, the message a catch block swallowed
-		// — and nobody can get at them comfortably. `cap` bounds the output; `totalMatched` (out) is the
-		// count BEFORE the cap so the caller can report the dropped tail. Same cross-ALC discipline as
-		// Heap/Fields: ClrMD stays here, only StringHit POCOs cross to the script.
+		/// <summary>
+		/// Walk the managed heap for System.String objects, optionally regex-filtered. Dumps are full of
+		/// answers stored as strings — connection strings, URLs, paths, the message a catch block
+		/// swallowed — and nobody can get at them comfortably. Same cross-ALC discipline as
+		/// Heap/Fields: ClrMD stays here, only <see cref="StringHit"/> POCOs cross to the script.
+		/// </summary>
+		/// <param name="pattern">Compiled filter, or null for every string.</param>
+		/// <param name="cap">Bounds how many hits are returned.</param>
+		/// <param name="totalMatched">The match count BEFORE the cap, so the caller can report the dropped tail.</param>
 		public System.Collections.Generic.List<StringHit> Strings(
 			System.Text.RegularExpressions.Regex? pattern, int cap, out int totalMatched)
 		{
@@ -407,17 +445,22 @@ namespace WinDbgAotExt.Bridge
 		}
 	}
 
-	// A view over the debuggee's managed GC heap. `.Objects` materializes the walk into plain POCOs so
-	// the caller can LINQ them freely (GroupBy TypeName for a leak-hunt, etc.) without any ClrMD type
-	// crossing back into the script's world.
+	/// <summary>
+	/// A view over the debuggee's managed GC heap. <see cref="Objects"/> materializes the walk into
+	/// plain POCOs so the caller can LINQ them freely (GroupBy TypeName for a leak-hunt, etc.) without
+	/// any ClrMD type crossing back into the script's world.
+	/// </summary>
 	public sealed class HeapView
 	{
 		private readonly IntPtr _debugClient;
+
+		/// <summary>Bind the view to the extension's IDebugClient; the walk happens on <see cref="Objects"/> access.</summary>
 		public HeapView(IntPtr debugClient) { _debugClient = debugClient; }
 
-		// True once a walk found a CLR in the target. Distinguishes "empty heap" from "not a .NET process".
+		/// <summary>True once a walk found a CLR in the target. Distinguishes "empty heap" from "not a .NET process".</summary>
 		public bool ClrPresent { get; private set; }
 
+		/// <summary>Every object on the managed heap (address / size / type name), one full walk per access.</summary>
 		public System.Collections.Generic.List<HeapObjectInfo> Objects
 		{
 			get
@@ -447,30 +490,55 @@ namespace WinDbgAotExt.Bridge
 		}
 	}
 
-	// One managed object on the debuggee's heap, projected to plain fields for LINQ.
+	/// <summary>One managed object on the debuggee's heap, projected to plain fields for LINQ.</summary>
 	public sealed class HeapObjectInfo
 	{
+		/// <summary>Object address on the GC heap.</summary>
 		public ulong Address { get; init; }
+
+		/// <summary>Object size in bytes (as ClrMD reports it).</summary>
 		public ulong Size { get; init; }
+
+		/// <summary>Fully-qualified managed type name, or <c>&lt;unknown&gt;</c>.</summary>
 		public string TypeName { get; init; } = "";
+
+		/// <summary>One listing line: <c>TypeName @ 0xADDR (0xSIZE bytes)</c>.</summary>
 		public override string ToString() => $"{TypeName} @ 0x{Address:x} (0x{Size:x} bytes)";
 	}
 
-	// A loaded module, parsed from `lm` — enough to LINQ (name, address range, size).
+	/// <summary>A loaded module, parsed from <c>lm</c> — enough to LINQ (name, address range, size).</summary>
 	public sealed class ModuleInfo
 	{
+		/// <summary>Module name as <c>lm</c> prints it.</summary>
 		public string Name { get; init; } = "";
+
+		/// <summary>Image base address.</summary>
 		public ulong Start { get; init; }
+
+		/// <summary>End of the image's address range.</summary>
 		public ulong End { get; init; }
+
+		/// <summary>Image size (<see cref="End"/> − <see cref="Start"/>).</summary>
 		public ulong Size => End - Start;
+
+		/// <summary>One listing line: <c>name @ 0xSTART (0xSIZE bytes)</c>.</summary>
 		public override string ToString() => $"{Name} @ 0x{Start:x} (0x{Size:x} bytes)";
 	}
 
+	/// <summary>
+	/// The managed entry points the native extension calls through hostfxr's
+	/// load_assembly_and_get_function_pointer: the <c>!cs</c> evaluator (<see cref="Eval"/>), its
+	/// session commands, and the ClrMD-backed commands (<c>!fields</c>, <c>!strings</c>, <c>!report</c>).
+	/// Every export takes (argument pointer, debug client) and returns an HGlobal UTF-16 string the
+	/// native caller frees.
+	/// </summary>
 	public static class Bridge
 	{
-		// hostfxr's default "component entry point" signature: int F(IntPtr argument, int argumentSizeBytes).
-		// Step-1 proof-of-life: return a sentinel so the native host can confirm the call reached managed
-		// JIT code and returned.
+		/// <summary>
+		/// hostfxr's default "component entry point" signature: <c>int F(IntPtr, int)</c>.
+		/// Step-1 proof-of-life: return a sentinel so the native host can confirm the call reached
+		/// managed JIT code and returned.
+		/// </summary>
 		public static int Ping(IntPtr argument, int argumentSizeBytes) => 4242;
 
 		// The live C# SESSION. Roslyn's ScriptState is the continuation point: each !cs submission
@@ -481,8 +549,10 @@ namespace WinDbgAotExt.Bridge
 		// Without this every submission compiled from scratch and !cs was a calculator, not a session.
 		private static ScriptState<object>? _scriptState;
 
-		// Reset the session (!csreset): drop every variable the operator declared. Also the escape
-		// hatch when a script wedges the state (e.g. a variable holding a stale target's objects).
+		/// <summary>
+		/// Reset the session (<c>!csreset</c>): drop every variable the operator declared. Also the
+		/// escape hatch when a script wedges the state (e.g. a variable holding a stale target's objects).
+		/// </summary>
 		[UnmanagedCallersOnly]
 		public static IntPtr ResetScriptState(IntPtr unused, IntPtr alsoUnused)
 		{
@@ -493,8 +563,11 @@ namespace WinDbgAotExt.Bridge
 				: "!cs session was already empty.");
 		}
 
-		// !csvars: list the variables the operator has declared in the persistent !cs session, with
-		// type + value. The internal `debugger` binding is hidden -- it's plumbing, not the user's data.
+		/// <summary>
+		/// <c>!csvars</c>: list the variables the operator has declared in the persistent <c>!cs</c>
+		/// session, with type + value. The internal <c>debugger</c> binding is hidden — it's plumbing,
+		/// not the user's data.
+		/// </summary>
 		[UnmanagedCallersOnly]
 		public static IntPtr SessionVars(IntPtr unused, IntPtr alsoUnused)
 		{
@@ -512,10 +585,15 @@ namespace WinDbgAotExt.Bridge
 			return Marshal.StringToHGlobalUni(builder.ToString().TrimEnd());
 		}
 
-		// !report [path] entry point: run the standard triage battery and write ONE markdown file a
-		// junior engineer or an AI can consume -- the force-multiplier for "developers rarely have WinDbg
-		// experience." Exploits that the hosted CoreCLR has the full BCL (real File I/O), which the JS
-		// provider does not. Default path is %TEMP%\windbg-triage-report.md; an argument overrides it.
+		/// <summary>
+		/// <c>!report [path]</c> entry point: run the standard triage battery and write ONE markdown
+		/// file a junior engineer or an AI can consume — the force-multiplier for "developers rarely
+		/// have WinDbg experience." Exploits that the hosted CoreCLR has the full BCL (real File I/O),
+		/// which the JS provider does not. Default path is <c>%TEMP%\windbg-triage-report.md</c>; an
+		/// argument overrides it.
+		/// </summary>
+		/// <param name="pathUtf16">Optional UTF-16 output path; empty means the default temp path.</param>
+		/// <param name="debugClient">The IDebugClient for the current command.</param>
 		[UnmanagedCallersOnly]
 		public static IntPtr WriteReport(IntPtr pathUtf16, IntPtr debugClient)
 		{
@@ -609,9 +687,13 @@ namespace WinDbgAotExt.Bridge
 		private static string FormatNow() =>
 			DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss", System.Globalization.CultureInfo.InvariantCulture);
 
-		// !strings [pattern] entry point: walk the heap for managed strings (optionally regex-filtered),
-		// return a capped, formatted listing. A trailing " --all" token lifts the cap. Separate from Eval
-		// so it never touches the persistent !cs session.
+		/// <summary>
+		/// <c>!strings [pattern]</c> entry point: walk the heap for managed strings (optionally
+		/// regex-filtered), return a capped, formatted listing. A trailing <c>--all</c> token lifts the
+		/// cap. Separate from <see cref="Eval"/> so it never touches the persistent <c>!cs</c> session.
+		/// </summary>
+		/// <param name="argsUtf16">UTF-16 argument text: optional regex, optional trailing <c>--all</c>.</param>
+		/// <param name="debugClient">The IDebugClient for the current command.</param>
 		[UnmanagedCallersOnly]
 		public static IntPtr StringsText(IntPtr argsUtf16, IntPtr debugClient)
 		{
@@ -636,8 +718,13 @@ namespace WinDbgAotExt.Bridge
 			}
 		}
 
-		// !fields entry point: parse the address text, read the object's fields via ClrMD, return a
-		// formatted listing. Separate from Eval so it never touches the persistent !cs session.
+		/// <summary>
+		/// <c>!fields &lt;addr&gt;</c> entry point: parse the address text, read the object's fields via
+		/// ClrMD, return a formatted listing. Separate from <see cref="Eval"/> so it never touches the
+		/// persistent <c>!cs</c> session.
+		/// </summary>
+		/// <param name="addressUtf16">UTF-16 address text (0x-prefixed, bare hex, or backtick-grouped).</param>
+		/// <param name="debugClient">The IDebugClient for the current command.</param>
 		[UnmanagedCallersOnly]
 		public static IntPtr FieldsText(IntPtr addressUtf16, IntPtr debugClient)
 		{
@@ -692,10 +779,15 @@ namespace WinDbgAotExt.Bridge
 				typeof(Debugger).Assembly)                        // this bridge (so `Debugger` resolves)
 			.WithImports("System", "System.Linq", "System.Collections.Generic");
 
-		// Compile + run live C# via Roslyn INSIDE the hosted CoreCLR — the actual Layer-2 engine.
-		// Called via UNMANAGEDCALLERSONLY_METHOD. Takes a UTF-16 code string plus the debugger client
-		// (so scripts can reach the live target through `Debugger`), returns a UTF-16 result string
-		// allocated with HGlobal (the native caller frees it).
+		/// <summary>
+		/// Compile + run live C# via Roslyn INSIDE the hosted CoreCLR — the actual Layer-2 engine
+		/// behind <c>!cs</c>. Each submission continues the persistent <see cref="ScriptState{T}"/>
+		/// session, so variables declared in one command exist in the next.
+		/// </summary>
+		/// <param name="codeUtf16">UTF-16 C# source; scripts reach the live target through <c>debugger</c>.</param>
+		/// <param name="debugClient">The IDebugClient for the current command; re-bound into the session
+		/// on every submission (dbgeng hands each command its own client).</param>
+		/// <returns>A UTF-16 result string allocated with HGlobal (the native caller frees it).</returns>
 		[UnmanagedCallersOnly]
 		public static IntPtr Eval(IntPtr codeUtf16, IntPtr debugClient)
 		{

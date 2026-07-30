@@ -4,16 +4,26 @@ using System.Text;
 
 namespace WinDbgAotExt;
 
+/// <summary>
+/// Command dispatch: every export routes here by name, gets its IDebugControl resolved once, its
+/// arguments parsed, and its handler run behind a catch-all (an extension must never throw across
+/// the dbgeng ABI).
+/// </summary>
 public static unsafe class CommandHost
 {
+	/// <summary>One command implementation: (client, control, parsed argv, raw argument text) → HRESULT.</summary>
 	public delegate int CommandHandler(IntPtr pDebugClient, IntPtr pDebugControl, IReadOnlyList<string> argv, string raw);
 
 	private static readonly Dictionary<string, CommandHandler> _map = new(StringComparer.OrdinalIgnoreCase);
 
-	// Reported by !version and by DebugExtensionInitialize (as 0x00010003). The release pipeline
-	// GATES on this matching the tag, so `!version` in a debugger can never disagree with the
-	// release the user downloaded.
+	/// <summary>
+	/// Reported by <c>!version</c> and by DebugExtensionInitialize (as 0x00010003). The release
+	/// pipeline GATES on this matching the tag, so <c>!version</c> in a debugger can never disagree
+	/// with the release the user downloaded.
+	/// </summary>
 	public const uint EXT_VERSION_MAJOR = 1;
+
+	/// <summary>Minor half of the gated version; see <see cref="EXT_VERSION_MAJOR"/>.</summary>
 	public const uint EXT_VERSION_MINOR = 3;
 
 	static CommandHost()
@@ -31,8 +41,17 @@ public static unsafe class CommandHost
 		Register("wiltriage", WiltriageHandler); // triage the current break: benign vs fault + culprit
 	}
 
+	/// <summary>Register (or replace) a command handler under a case-insensitive name.</summary>
 	public static void Register(string name, CommandHandler handler) => _map[name] = handler;
 
+	/// <summary>
+	/// Dispatch one command: decode the UTF-8 argument text, resolve IDebugControl (null-client
+	/// safe — WinDbg can pass NULL in some contexts), run the handler, always release the control.
+	/// </summary>
+	/// <param name="name">The command name as exported (case-insensitive).</param>
+	/// <param name="pDebugClient">The IDebugClient dbgeng handed the export; may be NULL.</param>
+	/// <param name="argsUtf8">NUL-terminated UTF-8 argument text; may be null.</param>
+	/// <returns>The handler's HRESULT, or E_FAIL for unknown commands and thrown exceptions.</returns>
 	public static int Run(string name, IntPtr pDebugClient, byte* argsUtf8)
 	{
 		const int S_OK = 0, E_FAIL = unchecked((int)0x80004005);
@@ -203,6 +222,7 @@ public static unsafe class CommandHost
 		return Encoding.UTF8.GetString(new ReadOnlySpan<byte>(p, len));
 	}
 
+	/// <summary>Split raw argument text into argv: whitespace-separated, double-quote grouping, backslash escapes for <c>"</c> and <c>\</c>.</summary>
 	internal static List<string> Argv(string input)
 	{
 		var list = new List<string>();

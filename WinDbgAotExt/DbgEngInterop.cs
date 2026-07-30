@@ -1,29 +1,36 @@
-﻿using System;
+using System;
 using System.Text;
 
 namespace WinDbgAotExt;
 
-// This file gives you GUIDs and a minimal pattern to call COM vtables from C# Native AOT.
-// Flesh out only what you need to keep AOT size and risk low.
-
+/// <summary>
+/// GUIDs and a minimal pattern to call COM vtables from C# Native AOT. Fleshed out only as far as
+/// needed, to keep AOT size and risk low.
+/// </summary>
 public static unsafe class DbgEng
 {
-	// Common interface IIDs (add more as needed)
+	/// <summary>IID of IDebugClient.</summary>
 	public static readonly Guid IID_IDebugClient = new("27fe5639-8407-4f47-8364-ee118fb08ac8");
-	public static readonly Guid IID_IDebugControl = new("5182e668-105e-416e-ad92-24ef800424ba"); // IDebugControl(<= v4) baseline
 
-	// DEBUG_OUTPUT flags etc. (add selectively)
+	/// <summary>IID of IDebugControl (&lt;= v4 baseline).</summary>
+	public static readonly Guid IID_IDebugControl = new("5182e668-105e-416e-ad92-24ef800424ba");
+
+	/// <summary>Output control: route to this client only.</summary>
 	public const uint DEBUG_OUTCTL_THIS_CLIENT = 0x00000000;
+
+	/// <summary>Output mask: normal output.</summary>
 	public const uint DEBUG_OUTPUT_NORMAL = 0x00000001;
 
-	// QueryInterface helper for raw COM pointers (IUnknown*)
-	public static int QueryInterface(IntPtr unknownPointer, in Guid iid, out IntPtr interfacePointer) // returns HRESULT
+	/// <summary>QueryInterface helper for raw COM pointers (IUnknown*).</summary>
+	/// <returns>The HRESULT from IUnknown::QueryInterface.</returns>
+	public static int QueryInterface(IntPtr unknownPointer, in Guid iid, out IntPtr interfacePointer)
 	{
 		var vtable = *(nint**)unknownPointer;
 		var queryInterface = (delegate* unmanaged[Stdcall]<IntPtr, in Guid, out IntPtr, int>)vtable[0];
 		return queryInterface(unknownPointer, iid, out interfacePointer);
 	}
 
+	/// <summary>IUnknown::AddRef on a raw COM pointer.</summary>
 	public static uint AddRef(IntPtr unknownPointer)
 	{
 		var vtable = *(nint**)unknownPointer;
@@ -31,18 +38,13 @@ public static unsafe class DbgEng
 		return addRef(unknownPointer);
 	}
 
+	/// <summary>IUnknown::Release on a raw COM pointer.</summary>
 	public static uint Release(IntPtr unknownPointer)
 	{
 		var vtable = *(nint**)unknownPointer;
 		var release = (delegate* unmanaged[Stdcall]<IntPtr, uint>)vtable[2];
 		return release(unknownPointer);
 	}
-
-	// Example: call IDebugControl::Output (simplified for baseline interface)
-	// HRESULT Output(ULONG Mask, PCSTR Format, ...);
-	// The real signature is varargs; DbgEng also exposes OutputVa. To keep it simple,
-	// you can define a shim for a fixed string without format args if you target a newer interface,
-	// or use OutputWide if convenient. Here is a minimal "fixed format" call using UTF-8.
 
 	// Output is a printf-style VARARGS method -- STDMETHODV(Output)(ULONG Mask, PCSTR Format, ...)
 	// in dbgeng.h -- so whatever is passed here is parsed by the engine as a FORMAT STRING. Anything
@@ -55,10 +57,17 @@ public static unsafe class DbgEng
 	// its stack and fail-fast the debugger.
 	private const int StackCopyLimit = 1024;
 
+	/// <summary>
+	/// Call IDebugControl::Output with an already-escaped UTF-8 buffer. Output is printf-VARARGS in
+	/// dbgeng.h, so the text MUST have its <c>%</c> escaped before it reaches this call (see the
+	/// comment on <see cref="StackCopyLimit"/> for the live-repro'd corruption class). Vtable index 14
+	/// — NOT 8 (index 8 is OpenLogFile), verified against dbgeng.h; that was the bug.
+	/// </summary>
+	/// <param name="pControl">IDebugControl pointer.</param>
+	/// <param name="mask">DEBUG_OUTPUT_* mask.</param>
+	/// <param name="utf8NoNul">UTF-8 text without a trailing NUL (this method terminates it).</param>
 	public static int ControlOutput(IntPtr pControl, uint mask, ReadOnlySpan<byte> utf8NoNul)
 	{
-		// IDebugControl vtable: after IUnknown (0/1/2), Output is index 14 — NOT 8
-		// (index 8 is OpenLogFile). Verified against dbgeng.h. This was the bug.
 		var vtable = *(nint**)pControl;
 		var output = (delegate* unmanaged[Stdcall]<IntPtr, uint, sbyte*, int>)vtable[14];
 
@@ -81,10 +90,16 @@ public static unsafe class DbgEng
 		}
 	}
 
-	// Neutralize printf conversions in text that is DATA, not a format: the engine collapses "%%"
-	// back to a single '%', so the operator still reads what the command meant to print.
+	/// <summary>
+	/// Neutralize printf conversions in text that is DATA, not a format: the engine collapses
+	/// <c>%%</c> back to a single <c>%</c>, so the operator still reads what the command meant to print.
+	/// </summary>
 	internal static string EscapeFormat(string text) => text.Replace("%", "%%");
 
+	/// <summary>
+	/// Print one line to the debugger console, escaping printf conversions and appending the newline.
+	/// The safe default every command output path should use.
+	/// </summary>
 	public static void DbgOutLine(IntPtr pControl, string text)
 	{
 		if (pControl == IntPtr.Zero) return;
